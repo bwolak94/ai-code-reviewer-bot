@@ -1,14 +1,28 @@
+import path from 'node:path';
 import { Inject } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import type { Logger as PinoLogger } from 'pino';
-import { ReviewRunRepository, withTenantContext } from '@repo/db';
-import type { ReviewJobPayload, DrizzleDb } from '@repo/db';
+import {
+  ReviewRunRepository,
+  FindingRepository,
+  withTenantContext,
+} from '@repo/db';
+import type { ReviewJobPayload, DrizzleDb, NewFinding } from '@repo/db';
+import {
+  buildGraph,
+  evaluateRules,
+  graphDelta,
+} from '@repo/arch-graph';
+import { loadConfig } from '@repo/config';
+import { publishCheckRunAnnotations, determineConclusion } from '@repo/github';
+import { Octokit } from '@octokit/rest';
 import { SupersedeService } from './supersede.service.js';
 import { CloneService } from '../clone/clone.service.js';
 import { WorkspaceService } from '../clone/workspace.service.js';
 import { DiffFilterService } from '../diff/diff-filter.service.js';
 import { InstallationTokenService } from '../github/installation-token.service.js';
+import { GraphCacheService } from '../arch/graph-cache.service.js';
 
 /**
  * BullMQ job processor for the 'review' queue.
@@ -20,7 +34,13 @@ import { InstallationTokenService } from '../github/installation-token.service.j
  * 4. Shallow-clone the repository
  * 5. Filter the diff (strip generated/lock files, check size ceiling)
  * 6. Persist a ReviewRun row in PostgreSQL with status 'running'
- * 7. (M3+) Invoke arch-graph and llm-review packages
+ * 7. Load per-repo config from .github/ai-review.yml
+ * 8. Build base graph (cache hit or rebuild)
+ * 9. Build head graph
+ * 10. Compute graph delta (new violations only)
+ * 11. Publish check run annotations
+ * 12. Persist findings to DB
+ * 13. Update ReviewRun status to 'completed'
  *
  * The workspace is always cleaned up in a finally block (WorkspaceService).
  */
@@ -37,6 +57,8 @@ export class ReviewJobProcessor extends WorkerHost {
     private readonly cloneService: CloneService,
     private readonly diffFilterService: DiffFilterService,
     private readonly reviewRunRepository: ReviewRunRepository,
+    private readonly findingRepository: FindingRepository,
+    private readonly graphCacheService: GraphCacheService,
   ) {
     super();
   }
@@ -85,36 +107,36 @@ export class ReviewJobProcessor extends WorkerHost {
     // Step 3+: Create workspace, clone, diff — cleanup guaranteed via finally.
     const workspace = await this.workspaceService.create(jobId);
 
+    let runId: string | undefined;
+
     try {
-      // Step 4: Shallow-clone the head ref.
-      // The base is needed for diff computation — we clone the head and use
-      // `git fetch` to get the base SHA without a separate full clone.
-      const { repoDir } = await this.cloneService.clone(
-        // owner/repo is resolved by deriving it from the repository — in M3 this
-        // will query the DB. For now we embed a placeholder that tests can mock.
-        await this.resolveOwnerRepo(repositoryId),
-        await this.resolveRepoName(repositoryId),
+      // Resolve owner and repo name from DB
+      const owner = await this.resolveOwnerRepo(repositoryId);
+      const repoName = await this.resolveRepoName(repositoryId);
+
+      // Step 4: Shallow-clone the head ref into a 'head' subdirectory.
+      const { repoDir: headDir } = await this.cloneService.clone(
+        owner,
+        repoName,
         headRef,
         token,
-        workspace.dir,
+        path.join(workspace.dir, 'head'),
       );
 
-      // Step 5: Filter the diff.
-      // TODO(M3): Load per-repo config from .github/ai-review.yml via
-      // @repo/config and forward config.review.ignore globs here. Until
-      // M3 the DiffFilterService only applies DEFAULT_IGNORE_GLOBS.
+      // Step 7: Load per-repo config from .github/ai-review.yml.
+      const config = loadConfig(headDir);
+
+      // Step 5: Filter the diff using config ignore patterns.
       const diffResult = await this.diffFilterService.filter(
-        repoDir,
+        headDir,
         baseSha,
         headSha,
-        [], // M3: replace with configLoader.load(repoDir).review.ignore
+        config.review.ignore,
       );
 
       // Step 6: Persist the ReviewRun with status 'running'.
-      // withTenantContext sets SET LOCAL app.current_installation_id so that
-      // PostgreSQL RLS policies apply correctly for multi-tenant isolation.
-      await withTenantContext(this.db, installationId, async () => {
-        await this.reviewRunRepository.createRun({
+      const run = await withTenantContext(this.db, installationId, async () => {
+        return this.reviewRunRepository.createRun({
           repositoryId,
           prNumber,
           baseSha,
@@ -122,6 +144,56 @@ export class ReviewJobProcessor extends WorkerHost {
           status: 'running',
         });
       });
+
+      runId = run.id;
+
+      // Step 8: Get or build base graph violations.
+      let baseViolations = await this.graphCacheService.getBaseGraph(
+        repositoryId,
+        baseSha,
+      );
+
+      if (baseViolations === null) {
+        this.logger.debug(
+          { repositoryId, baseSha },
+          'graph-cache miss — cloning base ref and building base graph',
+        );
+
+        // CRIT-3: Clone the base ref into a separate subdirectory so the base
+        // graph is built from the actual base commit, not the head checkout.
+        const { repoDir: baseDir } = await this.cloneService.clone(
+          owner,
+          repoName,
+          baseRef,
+          token,
+          path.join(workspace.dir, 'base'),
+        );
+
+        const baseGraph = buildGraph({
+          workspaceDir: baseDir,
+          tsconfigPath: config.tsconfig,
+          layers: config.layers,
+        });
+
+        baseViolations = evaluateRules(baseGraph, config.rules, baseDir);
+
+        await this.graphCacheService.setBaseGraph(
+          repositoryId,
+          baseSha,
+          baseViolations,
+        );
+      }
+
+      // Step 9: Build head graph.
+      const headGraph = buildGraph({
+        workspaceDir: headDir,
+        tsconfigPath: config.tsconfig,
+        layers: config.layers,
+      });
+      const headViolations = evaluateRules(headGraph, config.rules, headDir);
+
+      // Step 10: Compute delta — only violations new in head.
+      const deltaViolations = graphDelta(baseViolations, headViolations);
 
       this.logger.info(
         {
@@ -132,9 +204,87 @@ export class ReviewJobProcessor extends WorkerHost {
           headSha,
           filteredFiles: diffResult.filteredFiles.length,
           summaryOnlyMode: diffResult.summaryOnlyMode,
+          baseViolations: baseViolations.length,
+          headViolations: headViolations.length,
+          deltaViolations: deltaViolations.length,
         },
-        'review job pipeline stage complete — awaiting M3 LLM review',
+        'graph analysis complete',
       );
+
+      // Step 11: Publish check run annotations.
+      const conclusion = determineConclusion(
+        deltaViolations,
+        config.review.min_severity_inline,
+      );
+
+      const octokit = new Octokit({ auth: token });
+
+      // Only publish if we have a check run ID — it may not be set in all flows.
+      const checkRunId = run.checkRunId;
+      if (checkRunId !== null && checkRunId !== undefined) {
+        await publishCheckRunAnnotations({
+          octokit,
+          owner,
+          repo: repoName,
+          checkRunId,
+          violations: deltaViolations,
+          conclusion,
+          summaryTitle: 'Architectural Review',
+        });
+      }
+
+      // Step 12: Persist findings to DB.
+      if (deltaViolations.length > 0) {
+        const newFindings: NewFinding[] = deltaViolations.map((v) => ({
+          runId: run.id,
+          fingerprint: v.fingerprint,
+          source: 'graph',
+          ruleOrCategory: v.rule,
+          severity: v.severity,
+          file: v.file,
+          line: v.line,
+          rationale: v.message,
+        }));
+
+        await withTenantContext(this.db, installationId, async () => {
+          await this.findingRepository.insertFindings(run.id, newFindings);
+        });
+      }
+
+      // Step 13: Update ReviewRun status to 'completed'.
+      await withTenantContext(this.db, installationId, async () => {
+        await this.reviewRunRepository.updateRunStatus(run.id, 'completed');
+      });
+
+      this.logger.info(
+        {
+          jobId,
+          installationId,
+          repositoryId,
+          prNumber,
+          headSha,
+          runId: run.id,
+          conclusion,
+        },
+        'review job completed',
+      );
+    } catch (err) {
+      // Attempt to mark the run as failed if we have a run ID
+      // MED-3: Assign to a const so TypeScript can narrow to `string` without a cast.
+      const failedRunId = runId;
+      if (failedRunId !== undefined) {
+        try {
+          await withTenantContext(this.db, installationId, async () => {
+            await this.reviewRunRepository.updateRunStatus(failedRunId, 'failed');
+          });
+        } catch (updateErr) {
+          this.logger.error(
+            { updateErr, runId },
+            'failed to update review run status to failed',
+          );
+        }
+      }
+      throw err;
     } finally {
       // Always clean up the workspace regardless of success or failure.
       await workspace.cleanup();
@@ -147,13 +297,13 @@ export class ReviewJobProcessor extends WorkerHost {
    */
   private async resolveOwnerRepo(repositoryId: number): Promise<string> {
     void repositoryId;
-    // TODO(M3): Query InstallationRepository for owner.
+    // TODO(M4): Query InstallationRepository for owner.
     return 'unknown-owner';
   }
 
   private async resolveRepoName(repositoryId: number): Promise<string> {
     void repositoryId;
-    // TODO(M3): Query InstallationRepository for repo name.
+    // TODO(M4): Query InstallationRepository for repo name.
     return 'unknown-repo';
   }
 }
