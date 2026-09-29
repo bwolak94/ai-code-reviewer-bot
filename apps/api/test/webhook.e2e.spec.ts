@@ -57,6 +57,49 @@ vi.mock('ioredis', () => ({
   Redis: vi.fn(() => redisMock),
 }));
 
+// Mock @repo/db so the e2e test does not require a real PostgreSQL connection.
+vi.mock('@repo/db', () => ({
+  createDb: () => ({
+    db: {},
+    pool: { end: vi.fn() },
+  }),
+  InstallationRepository: vi.fn().mockImplementation(() => ({
+    upsertInstallation: vi.fn().mockResolvedValue({}),
+    upsertRepository: vi.fn().mockResolvedValue({}),
+    suspendInstallation: vi.fn().mockResolvedValue(undefined),
+    unsuspendInstallation: vi.fn().mockResolvedValue(undefined),
+    findByInstallationId: vi.fn().mockResolvedValue(undefined),
+  })),
+  ReviewRunRepository: vi.fn().mockImplementation(() => ({
+    createRun: vi.fn().mockResolvedValue({ id: 'test-uuid' }),
+    updateRunStatus: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
+// Mock ReviewQueueService so the e2e test does not require a real BullMQ/Redis connection.
+// WebhookService calls enqueueReviewJob() — this mock records the call without I/O.
+vi.mock('../src/queue/review-queue.service.js', () => ({
+  ReviewQueueService: vi.fn().mockImplementation(() => ({
+    enqueueReviewJob: vi.fn().mockResolvedValue(undefined),
+  })),
+  buildJobId: vi.fn().mockReturnValue('test-job-id'),
+}));
+
+// Mock bullmq at the package level so @nestjs/bullmq's forRootAsync and
+// registerQueue do not attempt real Redis connections in the test environment.
+vi.mock('bullmq', () => ({
+  Queue: vi.fn().mockImplementation(() => ({
+    add: vi.fn().mockResolvedValue({ id: 'mock-job-id' }),
+    getJobs: vi.fn().mockResolvedValue([]),
+  })),
+  Worker: vi.fn().mockImplementation(() => ({
+    pause: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn(),
+  })),
+  QueueEvents: vi.fn().mockImplementation(() => ({ on: vi.fn() })),
+}));
+
 vi.mock('../src/config/env.js', () => ({
   getEnv: () => ({
     GITHUB_WEBHOOK_SECRET: TEST_SECRET,
@@ -68,12 +111,18 @@ vi.mock('../src/config/env.js', () => ({
     REDIS_QUEUE_URL: 'redis://localhost:6379',
     REDIS_CACHE_URL: 'redis://localhost:6380',
     DATABASE_URL: 'postgres://localhost:5432/test',
+    TOKEN_ENCRYPTION_KEY: 'a'.repeat(64),
   }),
   validateEnv: () => ({}),
 }));
 
 // ─── App setup ───────────────────────────────────────────────────────────────
 const { AppModule } = await import('../src/app.module.js');
+const { ReviewQueueService } = await import('../src/queue/review-queue.service.js');
+
+const mockReviewQueueService = {
+  enqueueReviewJob: vi.fn().mockResolvedValue(undefined),
+};
 
 describe('WebhookController (e2e)', () => {
   let app: NestFastifyApplication;
@@ -81,7 +130,10 @@ describe('WebhookController (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(ReviewQueueService)
+      .useValue(mockReviewQueueService)
+      .compile();
 
     const adapter = new FastifyAdapter({ logger: false });
     app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);

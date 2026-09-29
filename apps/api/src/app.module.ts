@@ -4,6 +4,7 @@ import { InstallationModule } from './installation/installation.module.js';
 import { HealthModule } from './health/health.module.js';
 import { LoggerModule } from './logger/logger.module.js';
 import { RedisModule } from './redis/redis.module.js';
+import { DbModule } from './db/db.module.js';
 import { getEnv } from './config/env.js';
 
 /**
@@ -20,6 +21,7 @@ import { getEnv } from './config/env.js';
   imports: [
     LoggerModule,
     RedisModule,
+    DbModule,
     WebhookModule,
     InstallationModule,
     HealthModule,

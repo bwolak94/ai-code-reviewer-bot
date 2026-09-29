@@ -6,9 +6,10 @@ import { DedupService } from './dedup.service.js';
 import { InstallationModule } from '../installation/installation.module.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { LoggerModule } from '../logger/logger.module.js';
+import { QueueModule } from '../queue/queue.module.js';
 
 @Module({
-  imports: [InstallationModule, RedisModule, LoggerModule],
+  imports: [InstallationModule, RedisModule, LoggerModule, QueueModule],
   controllers: [WebhookController],
   providers: [WebhookService, WebhookGuard, DedupService],
   exports: [WebhookGuard],
