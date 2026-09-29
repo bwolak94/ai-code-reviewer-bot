@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "moduleResolution": "NodeNext",
+    "module": "NodeNext",
+    "target": "ES2022",
+    "strict": true,
+    "rootDir": ".",
+    "paths": {
+      "@repo/arch-graph": ["../packages/arch-graph/dist/index.d.ts"],
+      "@repo/config": ["../packages/config/dist/index.d.ts"]
+    }
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules", "fixtures"]
+}

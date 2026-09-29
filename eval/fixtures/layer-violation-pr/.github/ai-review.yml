@@ -1,0 +1,9 @@
+version: 1
+layers:
+  domain: ["src/domain/**"]
+  infrastructure: ["src/infrastructure/**"]
+rules:
+  layer-dependency:
+    allow:
+      infrastructure: ["domain"]
+      domain: []
