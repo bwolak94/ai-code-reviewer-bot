@@ -23,6 +23,7 @@ import { WorkspaceService } from '../clone/workspace.service.js';
 import { DiffFilterService } from '../diff/diff-filter.service.js';
 import { InstallationTokenService } from '../github/installation-token.service.js';
 import { GraphCacheService } from '../arch/graph-cache.service.js';
+import { FindingDedupService } from '../dedup/dedup.service.js';
 
 /**
  * BullMQ job processor for the 'review' queue.
@@ -59,6 +60,7 @@ export class ReviewJobProcessor extends WorkerHost {
     private readonly reviewRunRepository: ReviewRunRepository,
     private readonly findingRepository: FindingRepository,
     private readonly graphCacheService: GraphCacheService,
+    private readonly findingDedupService: FindingDedupService,
   ) {
     super();
   }
@@ -211,9 +213,35 @@ export class ReviewJobProcessor extends WorkerHost {
         'graph analysis complete',
       );
 
+      // Step 10.5: Deduplicate — filter suppressed findings before publishing.
+      // Must run BEFORE inserting findings for this run so all are correctly marked isNew.
+      const dedupResults = await this.findingDedupService.deduplicateFindings(
+        repositoryId,
+        prNumber,
+        deltaViolations.map((v) => ({
+          fingerprint: v.fingerprint,
+          source: 'graph',
+          ruleOrCategory: v.rule,
+          severity: v.severity,
+          file: v.file,
+          line: v.line,
+          rationale: v.message,
+        })),
+      );
+
+      const suppressedFingerprints = new Set(
+        dedupResults
+          .filter((r) => r.isSuppressed)
+          .map((r) => r.finding.fingerprint),
+      );
+
+      const violationsToPublish = deltaViolations.filter(
+        (v) => !suppressedFingerprints.has(v.fingerprint),
+      );
+
       // Step 11: Publish check run annotations.
       const conclusion = determineConclusion(
-        deltaViolations,
+        violationsToPublish,
         config.review.min_severity_inline,
       );
 
@@ -227,13 +255,14 @@ export class ReviewJobProcessor extends WorkerHost {
           owner,
           repo: repoName,
           checkRunId,
-          violations: deltaViolations,
+          violations: violationsToPublish,
           conclusion,
           summaryTitle: 'Architectural Review',
         });
       }
 
-      // Step 12: Persist findings to DB.
+      // Step 12: Persist findings to DB (all delta violations, including suppressed,
+      // so future dedup lookups can reference them).
       if (deltaViolations.length > 0) {
         const newFindings: NewFinding[] = deltaViolations.map((v) => ({
           runId: run.id,

@@ -7,6 +7,7 @@ import { DiffModule } from '../diff/diff.module.js';
 import { WorkerDbModule } from '../db/db.module.js';
 import { GithubModule } from '../github/github.module.js';
 import { ArchModule } from '../arch/arch.module.js';
+import { DedupModule } from '../dedup/dedup.module.js';
 
 /**
  * Registers the BullMQ processor and all supporting services for review job processing.
@@ -27,6 +28,7 @@ import { ArchModule } from '../arch/arch.module.js';
     WorkerDbModule,
     GithubModule,
     ArchModule,
+    DedupModule,
   ],
   providers: [ReviewJobProcessor, SupersedeService],
   exports: [SupersedeService],

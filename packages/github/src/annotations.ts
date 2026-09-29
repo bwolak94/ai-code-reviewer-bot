@@ -83,7 +83,7 @@ export async function publishCheckRunAnnotations(
     startLine: v.line,
     endLine: v.line,
     annotationLevel: severityToAnnotationLevel(v.severity),
-    message: v.message,
+    message: `${v.message}\n<!-- aireview:fp=${v.fingerprint} -->`,
     title: `[${v.rule}] ${v.file}:${v.line}`,
   }));
 

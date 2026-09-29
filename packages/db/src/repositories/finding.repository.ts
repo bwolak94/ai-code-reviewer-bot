@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { DrizzleDb } from '../client.js';
-import { findings, type Finding, type NewFinding } from '../schema.js';
+import { findings, reviewRuns, feedback, type Finding, type NewFinding } from '../schema.js';
 
 /**
  * Data access layer for the `findings` table.
@@ -53,5 +53,64 @@ export class FindingRepository {
       .limit(1);
 
     return rows[0];
+  }
+
+  /**
+   * Returns all finding fingerprints for a given repository + PR number.
+   * Used by DedupService to detect which findings were already seen.
+   */
+  async findFingerprintsByPr(
+    repositoryId: number,
+    prNumber: number,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .select({ fingerprint: findings.fingerprint })
+      .from(findings)
+      .innerJoin(reviewRuns, eq(findings.runId, reviewRuns.id))
+      .where(
+        and(
+          eq(reviewRuns.repositoryId, repositoryId),
+          eq(reviewRuns.prNumber, prNumber),
+        ),
+      );
+
+    return rows.map((r) => r.fingerprint);
+  }
+
+  /**
+   * Returns fingerprints that have an 'ignore' feedback entry (suppressed by user),
+   * scoped to a specific repository + PR. Uses a single JOIN query.
+   */
+  async findSuppressedFingerprints(
+    repositoryId: number,
+    prNumber: number,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .select({ fingerprint: findings.fingerprint })
+      .from(findings)
+      .innerJoin(reviewRuns, eq(findings.runId, reviewRuns.id))
+      .innerJoin(feedback, eq(feedback.findingId, findings.id))
+      .where(
+        and(
+          eq(reviewRuns.repositoryId, repositoryId),
+          eq(reviewRuns.prNumber, prNumber),
+          eq(feedback.kind, 'ignore'),
+        ),
+      );
+
+    return rows.map((r) => r.fingerprint);
+  }
+
+  /**
+   * Updates a finding row with the GitHub comment ID after posting.
+   */
+  async updateCommentId(
+    findingId: string,
+    githubCommentId: number,
+  ): Promise<void> {
+    await this.db
+      .update(findings)
+      .set({ githubCommentId })
+      .where(eq(findings.id, findingId));
   }
 }

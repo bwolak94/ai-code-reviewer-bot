@@ -9,6 +9,7 @@ import {
   uuid,
   date,
   index,
+  uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -115,17 +116,27 @@ export const findings = pgTable(
 
 /**
  * Feedback table: thumbs up/down signals collected from PR authors and reviewers.
+ * (findingId, actorLogin) is unique so an actor can only have one feedback per finding.
  */
-export const feedback = pgTable('feedback', {
-  id: uuid('id')
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  findingId: uuid('finding_id')
-    .notNull()
-    .references(() => findings.id, { onDelete: 'cascade' }),
-  kind: text('kind').notNull(),
-  actorLogin: text('actor_login').notNull(),
-});
+export const feedback = pgTable(
+  'feedback',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    findingId: uuid('finding_id')
+      .notNull()
+      .references(() => findings.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    actorLogin: text('actor_login').notNull(),
+  },
+  (table) => ({
+    findingActorUniq: uniqueIndex('feedback_finding_actor_uniq').on(
+      table.findingId,
+      table.actorLogin,
+    ),
+  }),
+);
 
 /**
  * Usage periods table: monthly token consumption per installation.

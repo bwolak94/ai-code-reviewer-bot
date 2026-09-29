@@ -2,6 +2,8 @@ import { Injectable, Inject } from '@nestjs/common';
 import type { Logger as PinoLogger } from 'pino';
 import { InstallationService } from '../installation/installation.service.js';
 import { ReviewQueueService } from '../queue/review-queue.service.js';
+import { CheckRunHandler } from './handlers/check-run.handler.js';
+import { ReviewCommentHandler } from './handlers/review-comment.handler.js';
 
 type PullRequestAction =
   | 'opened'
@@ -62,6 +64,8 @@ export class WebhookService {
     private readonly logger: PinoLogger,
     private readonly installationService: InstallationService,
     private readonly reviewQueueService: ReviewQueueService,
+    private readonly checkRunHandler: CheckRunHandler,
+    private readonly reviewCommentHandler: ReviewCommentHandler,
   ) {}
 
   /**
@@ -117,6 +121,10 @@ export class WebhookService {
           payload as CheckRunPayload,
           deliveryId,
         );
+        break;
+
+      case 'pull_request_review_comment':
+        await this.reviewCommentHandler.handle(payload);
         break;
 
       default:
@@ -270,10 +278,10 @@ export class WebhookService {
         checkRunId,
         accepted: true,
       },
-      'check_run.rerequested — will re-enqueue review job in M2',
+      'check_run.rerequested — delegating to CheckRunHandler',
     );
 
-    // M2 will re-enqueue a review job here.
+    await this.checkRunHandler.handle(payload);
   }
 
   private extractInstallationId(payload: unknown): number | undefined {

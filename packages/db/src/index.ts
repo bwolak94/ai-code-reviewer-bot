@@ -35,3 +35,5 @@ export { InstallationRepository } from './repositories/installation.repository.j
 export type { InstallationWithRepositories } from './repositories/installation.repository.js';
 export { ReviewRunRepository } from './repositories/review-run.repository.js';
 export { FindingRepository } from './repositories/finding.repository.js';
+export { FeedbackRepository } from './repositories/feedback.repository.js';
+export { UsagePeriodRepository } from './repositories/usage-period.repository.js';
