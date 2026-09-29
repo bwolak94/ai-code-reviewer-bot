@@ -22,6 +22,18 @@ const EnvSchema = z.object({
 
   // Database
   DATABASE_URL: z.string().url(),
+
+  // Security — AES-256-GCM key for installation token encryption at rest (SEC-003).
+  // Must be exactly 32 bytes, supplied as a 64-character lowercase hex string.
+  TOKEN_ENCRYPTION_KEY: z
+    .string()
+    .length(
+      64,
+      'TOKEN_ENCRYPTION_KEY must be 32 bytes as 64-char hex string',
+    ),
+
+  // LLM
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

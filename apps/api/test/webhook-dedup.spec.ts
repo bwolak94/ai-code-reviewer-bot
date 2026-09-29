@@ -21,6 +21,7 @@ vi.mock('../src/config/env.js', () => ({
     REDIS_QUEUE_URL: 'redis://localhost:6379',
     REDIS_CACHE_URL: 'redis://localhost:6380',
     DATABASE_URL: 'postgres://localhost:5432/test',
+    TOKEN_ENCRYPTION_KEY: 'a'.repeat(64),
   }),
   validateEnv: () => ({}),
 }));

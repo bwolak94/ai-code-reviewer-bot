@@ -1,6 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger as PinoLogger } from 'pino';
 import { InstallationService } from '../installation/installation.service.js';
+import { ReviewQueueService } from '../queue/review-queue.service.js';
 
 type PullRequestAction =
   | 'opened'
@@ -23,7 +24,7 @@ interface PullRequestPayload {
   repository?: { full_name: string; id: number };
   pull_request?: {
     number: number;
-    head: { sha: string };
+    head: { sha: string; ref: string };
     base: { sha: string; ref: string };
   };
 }
@@ -60,6 +61,7 @@ export class WebhookService {
     @Inject('PINO_LOGGER')
     private readonly logger: PinoLogger,
     private readonly installationService: InstallationService,
+    private readonly reviewQueueService: ReviewQueueService,
   ) {}
 
   /**
@@ -147,8 +149,11 @@ export class WebhookService {
     }
 
     const installationId = payload.installation?.id;
-    const repoFullName = payload.repository?.full_name;
+    const repositoryId = payload.repository?.id;
     const headSha = payload.pull_request?.head.sha;
+    const baseSha = payload.pull_request?.base.sha;
+    const headRef = payload.pull_request?.head.ref;
+    const baseRef = payload.pull_request?.base.ref;
     const prNumber = payload.pull_request?.number;
 
     this.logger.info(
@@ -157,15 +162,39 @@ export class WebhookService {
         event: 'pull_request',
         action,
         installationId,
-        repoFullName,
-        headSha,
+        repositoryId,
         prNumber,
+        headSha,
       },
       'pull_request event accepted for review',
     );
 
-    // M2 will enqueue a BullMQ job here. In M1 the check run is created
-    // directly via packages/github as a "hello world" demonstration.
+    if (
+      installationId === undefined ||
+      repositoryId === undefined ||
+      headSha === undefined ||
+      baseSha === undefined ||
+      headRef === undefined ||
+      baseRef === undefined ||
+      prNumber === undefined
+    ) {
+      this.logger.warn(
+        { deliveryId, event: 'pull_request', action, reason: 'missing-fields' },
+        'pull_request payload missing required fields — skipping enqueue',
+      );
+      return;
+    }
+
+    await this.reviewQueueService.enqueueReviewJob({
+      installationId,
+      repositoryId,
+      prNumber,
+      baseSha,
+      headSha,
+      baseRef,
+      headRef,
+      enqueuedAt: new Date().toISOString(),
+    });
   }
 
   private async handleInstallation(
