@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aireview
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aireview_dev}
+      POSTGRES_DB: aireview
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aireview -d aireview"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis-queue:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --maxmemory-policy noeviction
+      --requirepass ${REDIS_QUEUE_PASSWORD:-aireview_dev}
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_QUEUE_PASSWORD:-aireview_dev}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis-cache:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_CACHE_PASSWORD:-aireview_dev}
+    ports:
+      - "6380:6380"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_CACHE_PASSWORD:-aireview_dev}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DATABASE_URL: postgres://aireview:${POSTGRES_PASSWORD:-aireview_dev}@postgres:5432/aireview
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 20
+    ports:
+      - "5433:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

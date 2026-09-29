@@ -1,0 +1,25 @@
+name: ai-code-reviewer
+description: >
+  Reviews every Pull Request for architectural issues — layer violations,
+  dependency cycles, boundary leaks, and misplaced responsibilities.
+  Uses deterministic dependency-graph analysis plus an LLM semantic review.
+url: https://github.com/apps/ai-code-reviewer
+hook_attributes:
+  url: https://your-deployment-url/webhooks/github
+  active: true
+redirect_url: https://your-deployment-url/setup/complete
+callback_urls:
+  - https://your-deployment-url/auth/callback
+setup_url: https://your-deployment-url/setup
+public: false
+default_permissions:
+  pull_requests: write
+  checks: write
+  contents: read
+  metadata: read
+default_events:
+  - pull_request
+  - check_run
+  - installation
+  - installation_repositories
+  - pull_request_review_comment
