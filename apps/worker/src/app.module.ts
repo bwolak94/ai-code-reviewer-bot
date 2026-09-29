@@ -6,6 +6,7 @@ import { WorkerDbModule } from './db/db.module.js';
 import { SharedModule } from './shared/shared.module.js';
 import { GithubModule } from './github/github.module.js';
 import { ArchModule } from './arch/arch.module.js';
+import { WorkerLlmReviewModule } from './llm-review/llm-review.module.js';
 import { getWorkerEnv } from './config/env.js';
 
 /**
@@ -46,6 +47,7 @@ import { getWorkerEnv } from './config/env.js';
     GithubModule,
     ArchModule,
     ReviewJobModule,
+    WorkerLlmReviewModule,
   ],
   controllers: [WorkerHealthController],
 })
