@@ -7,3 +7,12 @@ export type {
   CheckRunOutput,
   CheckRunAnnotation,
 } from './types.js';
+
+export {
+  publishCheckRunAnnotations,
+  determineConclusion,
+} from './annotations.js';
+export type {
+  PublishAnnotationsParams,
+  ViolationForAnnotation,
+} from './annotations.js';

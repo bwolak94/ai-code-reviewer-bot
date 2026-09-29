@@ -10,6 +10,7 @@ const WorkerEnvSchema = z.object({
   GITHUB_PRIVATE_KEY: z
     .string()
     .min(100, 'GITHUB_PRIVATE_KEY appears truncated — expected a full PEM private key'),
+  GITHUB_WEBHOOK_SECRET: z.string().min(1),
 
   // Redis
   REDIS_QUEUE_URL: z.string().url(),

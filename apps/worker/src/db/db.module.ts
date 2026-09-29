@@ -1,5 +1,10 @@
 import { Global, Module } from '@nestjs/common';
-import { createDb, InstallationRepository, ReviewRunRepository } from '@repo/db';
+import {
+  createDb,
+  InstallationRepository,
+  ReviewRunRepository,
+  FindingRepository,
+} from '@repo/db';
 import { getWorkerEnv } from '../config/env.js';
 
 /**
@@ -30,7 +35,13 @@ import { getWorkerEnv } from '../config/env.js';
         new ReviewRunRepository(db),
       inject: ['DRIZZLE_DB'],
     },
+    {
+      provide: FindingRepository,
+      useFactory: (db: ReturnType<typeof createDb>['db']) =>
+        new FindingRepository(db),
+      inject: ['DRIZZLE_DB'],
+    },
   ],
-  exports: ['DRIZZLE_DB', InstallationRepository, ReviewRunRepository],
+  exports: ['DRIZZLE_DB', InstallationRepository, ReviewRunRepository, FindingRepository],
 })
 export class WorkerDbModule {}

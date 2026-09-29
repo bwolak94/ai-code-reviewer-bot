@@ -7,8 +7,9 @@ import { CloneService } from '../src/clone/clone.service.js';
 import { WorkspaceService } from '../src/clone/workspace.service.js';
 import { DiffFilterService } from '../src/diff/diff-filter.service.js';
 import { InstallationTokenService } from '../src/github/installation-token.service.js';
-import { ReviewRunRepository } from '@repo/db';
+import { ReviewRunRepository, FindingRepository } from '@repo/db';
 import type { ReviewJobPayload } from '@repo/db';
+import { GraphCacheService } from '../src/arch/graph-cache.service.js';
 
 // Mock withTenantContext to call through immediately — avoids needing a real
 // DB transaction in unit tests while still exercising the repository call.
@@ -26,6 +27,43 @@ vi.mock('@repo/db', async (importOriginal) => {
   };
 });
 
+// Mock packages/arch-graph to avoid running ts-morph in unit tests
+vi.mock('@repo/arch-graph', () => ({
+  buildGraph: vi.fn(() => ({
+    nodes: new Map(),
+    edges: [],
+  })),
+  evaluateRules: vi.fn(() => []),
+  graphDelta: vi.fn(() => []),
+}));
+
+// Mock packages/config to return a minimal config
+vi.mock('@repo/config', () => ({
+  loadConfig: vi.fn(() => ({
+    version: 1,
+    language: 'typescript',
+    tsconfig: 'tsconfig.json',
+    layers: {},
+    rules: {},
+    llm: { enabled: true, focus: [] },
+    review: {
+      min_severity_inline: 'high',
+      max_inline_comments: 10,
+      ignore: ['**/*.spec.ts'],
+    },
+  })),
+}));
+
+// Mock packages/github annotations
+vi.mock('@repo/github', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    publishCheckRunAnnotations: vi.fn().mockResolvedValue(undefined),
+    determineConclusion: vi.fn().mockReturnValue('success'),
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -40,7 +78,7 @@ function makeJob(overrides: Partial<ReviewJobPayload> = {}): {
       installationId: 100,
       repositoryId: 200,
       prNumber: 42,
-      baseSha: 'base-sha-abc',
+      baseSha: 'aabbcc1234567',
       headSha: 'head-sha-xyz',
       baseRef: 'main',
       headRef: 'feat/my-feature',
@@ -63,6 +101,10 @@ describe('ReviewJobProcessor', () => {
   let mockClone: ReturnType<typeof vi.fn>;
   let mockFilter: ReturnType<typeof vi.fn>;
   let mockCreateRun: ReturnType<typeof vi.fn>;
+  let mockUpdateRunStatus: ReturnType<typeof vi.fn>;
+  let mockInsertFindings: ReturnType<typeof vi.fn>;
+  let mockGetBaseGraph: ReturnType<typeof vi.fn>;
+  let mockSetBaseGraph: ReturnType<typeof vi.fn>;
   let workspaceCleanup: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
@@ -85,10 +127,15 @@ describe('ReviewJobProcessor', () => {
       id: 'uuid-run-id',
       repositoryId: 200,
       prNumber: 42,
-      baseSha: 'base-sha-abc',
+      baseSha: 'aabbcc1234567',
       headSha: 'head-sha-xyz',
+      checkRunId: null,
       status: 'running',
     });
+    mockUpdateRunStatus = vi.fn().mockResolvedValue(undefined);
+    mockInsertFindings = vi.fn().mockResolvedValue([]);
+    mockGetBaseGraph = vi.fn().mockResolvedValue(null);
+    mockSetBaseGraph = vi.fn().mockResolvedValue(undefined);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -115,7 +162,21 @@ describe('ReviewJobProcessor', () => {
         },
         {
           provide: ReviewRunRepository,
-          useValue: { createRun: mockCreateRun },
+          useValue: {
+            createRun: mockCreateRun,
+            updateRunStatus: mockUpdateRunStatus,
+          },
+        },
+        {
+          provide: FindingRepository,
+          useValue: { insertFindings: mockInsertFindings },
+        },
+        {
+          provide: GraphCacheService,
+          useValue: {
+            getBaseGraph: mockGetBaseGraph,
+            setBaseGraph: mockSetBaseGraph,
+          },
         },
         {
           provide: 'DRIZZLE_DB',
@@ -213,5 +274,52 @@ describe('ReviewJobProcessor', () => {
       77,
       'specific-sha',
     );
+  });
+
+  it('tries base graph from cache before building from source', async () => {
+    const cachedViolations = [
+      {
+        rule: 'layer-dependency',
+        file: 'src/a.ts',
+        line: 1,
+        message: 'violation',
+        severity: 'high' as const,
+        fingerprint: 'a'.repeat(64),
+      },
+    ];
+    mockGetBaseGraph.mockResolvedValueOnce(cachedViolations);
+
+    await processor.process(makeJob() as never);
+
+    expect(mockGetBaseGraph).toHaveBeenCalledWith(200, 'aabbcc1234567');
+  });
+
+  it('caches base graph on cache miss', async () => {
+    // getBaseGraph returns null → cache miss → should call setBaseGraph
+    mockGetBaseGraph.mockResolvedValue(null);
+
+    await processor.process(makeJob() as never);
+
+    expect(mockSetBaseGraph).toHaveBeenCalledOnce();
+  });
+
+  it('updates ReviewRun status to completed after successful pipeline', async () => {
+    await processor.process(makeJob() as never);
+
+    expect(mockUpdateRunStatus).toHaveBeenCalledWith('uuid-run-id', 'completed');
+  });
+
+  // MED-6: Verify the error path sets status to 'failed' when an error occurs
+  // after createRun has already succeeded (runId is set).
+  it('calls updateRunStatus with "failed" when error occurs after createRun', async () => {
+    // getBaseGraph returns null → cache miss → setBaseGraph is called
+    mockGetBaseGraph.mockResolvedValue(null);
+    mockSetBaseGraph.mockRejectedValueOnce(new Error('Redis write failed'));
+
+    await expect(processor.process(makeJob() as never)).rejects.toThrow(
+      'Redis write failed',
+    );
+
+    expect(mockUpdateRunStatus).toHaveBeenCalledWith('uuid-run-id', 'failed');
   });
 });
