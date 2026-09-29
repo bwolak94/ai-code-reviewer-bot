@@ -10,6 +10,7 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/github/package.json ./packages/github/
+COPY packages/db/package.json ./packages/db/
 
 RUN pnpm install --frozen-lockfile --prod=false
 
@@ -19,9 +20,11 @@ WORKDIR /app
 
 COPY tsconfig.base.json ./
 COPY packages/github/ ./packages/github/
+COPY packages/db/ ./packages/db/
 COPY apps/api/ ./apps/api/
 
 RUN pnpm --filter @repo/github build
+RUN pnpm --filter @repo/db build
 RUN pnpm --filter @repo/api build
 
 # ─── Stage 3: runtime ──────────────────────────────────────────────────────
@@ -36,11 +39,13 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/github/package.json ./packages/github/
+COPY packages/db/package.json ./packages/db/
 
 RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/packages/github/dist ./packages/github/dist
+COPY --from=build /app/packages/db/dist ./packages/db/dist
 
 USER aireview
 
