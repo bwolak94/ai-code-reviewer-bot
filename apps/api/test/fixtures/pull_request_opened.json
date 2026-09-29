@@ -1,0 +1,117 @@
+{
+  "_meta": {
+    "headers": {
+      "x-github-event": "pull_request",
+      "x-github-delivery": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "x-hub-signature-256": "sha256=computed-against-test-webhook-secret",
+      "content-type": "application/json"
+    },
+    "testSecret": "test-webhook-secret",
+    "note": "x-hub-signature-256 is recomputed in tests using createHmac('sha256', testSecret)"
+  },
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "url": "https://api.github.com/repos/example-org/example-repo/pulls/42",
+    "id": 1234567890,
+    "node_id": "PR_kwDOABCDEF5Rg1hI",
+    "html_url": "https://github.com/example-org/example-repo/pull/42",
+    "diff_url": "https://github.com/example-org/example-repo/pull/42.diff",
+    "patch_url": "https://github.com/example-org/example-repo/pull/42.patch",
+    "number": 42,
+    "state": "open",
+    "locked": false,
+    "title": "feat: add user authentication module",
+    "user": {
+      "login": "developer-alice",
+      "id": 1001,
+      "type": "User"
+    },
+    "body": "Adds the user authentication module with JWT support.",
+    "created_at": "2026-09-29T10:00:00Z",
+    "updated_at": "2026-09-29T10:00:00Z",
+    "head": {
+      "label": "developer-alice:feat/user-auth",
+      "ref": "feat/user-auth",
+      "sha": "abc1234567890abcdef1234567890abcdef123456",
+      "user": {
+        "login": "developer-alice",
+        "id": 1001,
+        "type": "User"
+      },
+      "repo": {
+        "id": 987654321,
+        "node_id": "R_kgDOABCDEF",
+        "name": "example-repo",
+        "full_name": "example-org/example-repo",
+        "private": false,
+        "owner": {
+          "login": "example-org",
+          "id": 2001,
+          "type": "Organization"
+        },
+        "html_url": "https://github.com/example-org/example-repo",
+        "default_branch": "main"
+      }
+    },
+    "base": {
+      "label": "example-org:main",
+      "ref": "main",
+      "sha": "def9876543210fedcba9876543210fedcba987654",
+      "user": {
+        "login": "example-org",
+        "id": 2001,
+        "type": "Organization"
+      },
+      "repo": {
+        "id": 987654321,
+        "node_id": "R_kgDOABCDEF",
+        "name": "example-repo",
+        "full_name": "example-org/example-repo",
+        "private": false,
+        "owner": {
+          "login": "example-org",
+          "id": 2001,
+          "type": "Organization"
+        },
+        "html_url": "https://github.com/example-org/example-repo",
+        "default_branch": "main"
+      }
+    },
+    "draft": false,
+    "mergeable": true
+  },
+  "repository": {
+    "id": 987654321,
+    "node_id": "R_kgDOABCDEF",
+    "name": "example-repo",
+    "full_name": "example-org/example-repo",
+    "private": false,
+    "owner": {
+      "login": "example-org",
+      "id": 2001,
+      "type": "Organization",
+      "site_admin": false
+    },
+    "html_url": "https://github.com/example-org/example-repo",
+    "description": "Example repository for ai-code-reviewer-bot",
+    "default_branch": "main"
+  },
+  "installation": {
+    "id": 55667788,
+    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uNTU2Njc3ODg="
+  },
+  "organization": {
+    "login": "example-org",
+    "id": 2001,
+    "node_id": "MDEyOk9yZ2FuaXphdGlvbjIwMDE=",
+    "url": "https://api.github.com/orgs/example-org",
+    "repos_url": "https://api.github.com/orgs/example-org/repos"
+  },
+  "sender": {
+    "login": "developer-alice",
+    "id": 1001,
+    "type": "User",
+    "site_admin": false
+  }
+}
