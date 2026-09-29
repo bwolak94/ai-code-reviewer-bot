@@ -73,6 +73,11 @@ vi.mock('@repo/db', () => ({
   ReviewRunRepository: vi.fn().mockImplementation(() => ({
     createRun: vi.fn().mockResolvedValue({ id: 'test-uuid' }),
     updateRunStatus: vi.fn().mockResolvedValue(undefined),
+    findRunByCheckRunId: vi.fn().mockResolvedValue(undefined),
+  })),
+  FeedbackRepository: vi.fn().mockImplementation(() => ({
+    upsertByFingerprint: vi.fn().mockResolvedValue(null),
+    findByFindingId: vi.fn().mockResolvedValue([]),
   })),
 }));
 

@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
 import { ReviewJobProcessor } from '../src/review-job/review-job.processor.js';
 import { SupersedeService } from '../src/review-job/supersede.service.js';
+import { FindingDedupService } from '../src/dedup/dedup.service.js';
 import { CloneService } from '../src/clone/clone.service.js';
 import { WorkspaceService } from '../src/clone/workspace.service.js';
 import { DiffFilterService } from '../src/diff/diff-filter.service.js';
@@ -189,6 +190,12 @@ describe('ReviewJobProcessor', () => {
             warn: vi.fn(),
             debug: vi.fn(),
             error: vi.fn(),
+          },
+        },
+        {
+          provide: FindingDedupService,
+          useValue: {
+            deduplicateFindings: vi.fn().mockResolvedValue([]),
           },
         },
         // BullMQ queue token is not directly needed by the processor in tests
