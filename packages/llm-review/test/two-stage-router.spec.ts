@@ -18,6 +18,7 @@ function makeDiffChunk(overrides: Partial<DiffChunk> = {}): DiffChunk {
 
 function makeFinding(overrides: Partial<Finding> = {}): Finding {
   return {
+    source: 'llm',
     file: 'src/domain/user.service.ts',
     line: 5,
     severity: 'high',
@@ -62,7 +63,7 @@ describe('TwoStageRouter', () => {
 
     mockProvider = {
       triage: vi.fn().mockResolvedValue({ score: 0.8, rationale: 'Crosses boundaries' }),
-      review: vi.fn().mockResolvedValue([makeFinding()]),
+      review: vi.fn().mockResolvedValue({ findings: [makeFinding()], tokensIn: 0, tokensOut: 0 }),
     };
 
     mockBudget = {
@@ -109,7 +110,7 @@ describe('TwoStageRouter', () => {
   it('calls review for chunks that score at or above threshold', async () => {
     mockProvider.triage.mockResolvedValue({ score: 0.3, rationale: 'Exactly at threshold' });
     const finding = makeFinding();
-    mockProvider.review.mockResolvedValue([finding]);
+    mockProvider.review.mockResolvedValue({ findings: [finding], tokensIn: 10, tokensOut: 5 });
 
     const chunks = [makeDiffChunk()];
     const findings = await router.route(chunks, baseInput, 100, 0.3);
@@ -125,8 +126,8 @@ describe('TwoStageRouter', () => {
     const findingB = makeFinding({ file: 'src/b.ts', line: 2 });
 
     mockProvider.review
-      .mockResolvedValueOnce([findingA])
-      .mockResolvedValueOnce([findingB]);
+      .mockResolvedValueOnce({ findings: [findingA], tokensIn: 10, tokensOut: 5 })
+      .mockResolvedValueOnce({ findings: [findingB], tokensIn: 10, tokensOut: 5 });
 
     // Two files from different top-level directories — separate modules
     const chunks = [

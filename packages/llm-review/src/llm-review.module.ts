@@ -26,7 +26,7 @@ export { LLM_PROVIDER } from './constants.js';
         }
         return new AnthropicProvider(budget, apiKey, logger);
       },
-      inject: [TokenBudgetService, 'ANTHROPIC_API_KEY', 'PINO_LOGGER'],
+      inject: [TokenBudgetService, { token: 'ANTHROPIC_API_KEY', optional: true }, 'PINO_LOGGER'],
     },
   ],
   exports: [LLM_PROVIDER, TwoStageRouter, TokenBudgetService],

@@ -1,5 +1,5 @@
 export type { DiffChunk, TriageResult, DeterministicViolation, NeighbouringFile, ReviewConfig } from './types.js';
-export type { ReviewInput, LLMProvider } from './provider/llm-provider.interface.js';
+export type { ReviewInput, ReviewResult } from './provider/llm-provider.interface.js';
 export { FindingSchema, FindingsOutputSchema } from './schema/finding.schema.js';
 export type { Finding } from './schema/finding.schema.js';
 export { LlmReviewModule } from './llm-review.module.js';

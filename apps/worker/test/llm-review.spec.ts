@@ -4,9 +4,9 @@ import { LlmReviewService } from '../src/llm-review/llm-review.service.js';
 import type { LlmReviewParams } from '../src/llm-review/llm-review.service.js';
 import type { Finding } from '@repo/llm-review';
 
-// Mock child_process.execSync so we don't run real git commands
+// Mock child_process.execFileSync so we don't run real git commands
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
 // Mock @repo/github's parseUnifiedDiff and isLineInDiff
@@ -29,16 +29,17 @@ vi.mock('@repo/llm-review', async (importOriginal) => {
   };
 });
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { parseUnifiedDiff, isLineInDiff } from '@repo/github';
 import { TwoStageRouter } from '@repo/llm-review';
 
-const mockExecSync = vi.mocked(execSync);
+const mockExecSync = vi.mocked(execFileSync);
 const mockParseUnifiedDiff = vi.mocked(parseUnifiedDiff);
 const mockIsLineInDiff = vi.mocked(isLineInDiff);
 
 function makeFinding(overrides: Partial<Finding> = {}): Finding {
   return {
+    source: 'llm',
     file: 'src/domain/user.service.ts',
     line: 5,
     severity: 'high',

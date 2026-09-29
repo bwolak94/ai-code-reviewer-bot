@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DiffChunk } from '../src/types.js';
 import type { ReviewInput } from '../src/provider/llm-provider.interface.js';
-import type { Finding } from '../src/schema/finding.schema.js';
 
 // Mock the @anthropic-ai/sdk module
 const mockCreate = vi.fn();
@@ -21,6 +20,8 @@ vi.mock('@anthropic-ai/sdk', () => {
 
 // Import after mocks are set up
 const { AnthropicProvider } = await import('../src/provider/anthropic.provider.js');
+
+const DEFAULT_USAGE = { input_tokens: 100, output_tokens: 50 };
 
 function makeDiffChunk(overrides: Partial<DiffChunk> = {}): DiffChunk {
   return {
@@ -60,6 +61,17 @@ const mockLogger = {
   error: vi.fn(),
 };
 
+// Raw finding shape as the LLM would return (before Zod adds defaults like source)
+const rawValidFinding = {
+  file: 'src/domain/user.service.ts',
+  line: 5,
+  severity: 'high',
+  category: 'layering',
+  title: 'Domain imports infrastructure',
+  rationale: 'Domain layer should not import infrastructure concerns.',
+  confidence: 0.9,
+};
+
 describe('AnthropicProvider', () => {
   let provider: InstanceType<typeof AnthropicProvider>;
 
@@ -77,6 +89,7 @@ describe('AnthropicProvider', () => {
             text: '{"score": 0.8, "rationale": "Crosses layer boundaries"}',
           },
         ],
+        usage: DEFAULT_USAGE,
       });
 
       const result = await provider.triage(makeDiffChunk());
@@ -93,6 +106,7 @@ describe('AnthropicProvider', () => {
             text: 'This is not valid JSON at all!',
           },
         ],
+        usage: DEFAULT_USAGE,
       });
 
       const result = await provider.triage(makeDiffChunk());
@@ -116,6 +130,7 @@ describe('AnthropicProvider', () => {
           { type: 'text', text: '{"score": 0.' },
           { type: 'text', text: '7, "rationale": "Mixed changes"}' },
         ],
+        usage: DEFAULT_USAGE,
       });
 
       const result = await provider.triage(makeDiffChunk());
@@ -126,27 +141,18 @@ describe('AnthropicProvider', () => {
 
   describe('review', () => {
     it('returns findings from a valid tool_use block', async () => {
-      const validFinding: Finding = {
-        file: 'src/domain/user.service.ts',
-        line: 5,
-        severity: 'high',
-        category: 'layering',
-        title: 'Domain imports infrastructure',
-        rationale: 'Domain layer should not import infrastructure concerns.',
-        confidence: 0.9,
-      };
-
       mockCreate.mockResolvedValue({
         content: [
           {
             type: 'tool_use',
             name: 'report_findings',
-            input: { findings: [validFinding] },
+            input: { findings: [rawValidFinding] },
           },
         ],
+        usage: DEFAULT_USAGE,
       });
 
-      const findings = await provider.review(makeReviewInput());
+      const { findings, tokensIn, tokensOut } = await provider.review(makeReviewInput());
 
       expect(findings).toHaveLength(1);
       expect(findings[0]).toMatchObject({
@@ -155,18 +161,11 @@ describe('AnthropicProvider', () => {
         severity: 'high',
         category: 'layering',
       });
+      expect(tokensIn).toBe(DEFAULT_USAGE.input_tokens);
+      expect(tokensOut).toBe(DEFAULT_USAGE.output_tokens);
     });
 
     it('drops invalid findings and returns only valid ones', async () => {
-      const validFinding: Finding = {
-        file: 'src/domain/user.service.ts',
-        line: 5,
-        severity: 'high',
-        category: 'layering',
-        title: 'Domain imports infrastructure',
-        rationale: 'Domain layer should not import infrastructure concerns.',
-        confidence: 0.9,
-      };
       const invalidFinding = {
         file: 'src/domain/user.service.ts',
         line: -1, // invalid — negative line number
@@ -182,38 +181,42 @@ describe('AnthropicProvider', () => {
           {
             type: 'tool_use',
             name: 'report_findings',
-            input: { findings: [invalidFinding, validFinding] },
+            input: { findings: [invalidFinding, rawValidFinding] },
           },
         ],
+        usage: DEFAULT_USAGE,
       });
 
-      const findings = await provider.review(makeReviewInput());
+      const { findings } = await provider.review(makeReviewInput());
 
       expect(findings).toHaveLength(1);
       expect(findings[0]).toMatchObject({ line: 5 });
     });
 
-    it('returns empty array when tool_use block is absent', async () => {
+    it('returns empty findings when tool_use block is absent', async () => {
       mockCreate.mockResolvedValue({
         content: [
           { type: 'text', text: 'I found no issues.' },
         ],
+        usage: DEFAULT_USAGE,
       });
 
-      const findings = await provider.review(makeReviewInput());
+      const { findings } = await provider.review(makeReviewInput());
 
       expect(findings).toEqual([]);
     });
 
-    it('returns empty array when API call throws', async () => {
+    it('returns zero tokens and empty findings when API call throws', async () => {
       mockCreate.mockRejectedValue(new Error('Connection timeout'));
 
-      const findings = await provider.review(makeReviewInput());
+      const result = await provider.review(makeReviewInput());
 
-      expect(findings).toEqual([]);
+      expect(result.findings).toEqual([]);
+      expect(result.tokensIn).toBe(0);
+      expect(result.tokensOut).toBe(0);
     });
 
-    it('returns empty array for empty findings array in tool_use', async () => {
+    it('returns empty findings array for empty findings in tool_use', async () => {
       mockCreate.mockResolvedValue({
         content: [
           {
@@ -222,9 +225,10 @@ describe('AnthropicProvider', () => {
             input: { findings: [] },
           },
         ],
+        usage: DEFAULT_USAGE,
       });
 
-      const findings = await provider.review(makeReviewInput());
+      const { findings } = await provider.review(makeReviewInput());
 
       expect(findings).toEqual([]);
     });

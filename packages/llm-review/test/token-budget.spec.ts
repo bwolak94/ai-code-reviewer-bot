@@ -4,10 +4,7 @@ import { TokenBudgetService } from '../src/budget/token-budget.service.js';
 
 describe('TokenBudgetService', () => {
   let service: TokenBudgetService;
-  let mockGet: ReturnType<typeof vi.fn>;
-  let mockIncrby: ReturnType<typeof vi.fn>;
-  let mockExpire: ReturnType<typeof vi.fn>;
-  let mockPipelineExec: ReturnType<typeof vi.fn>;
+  let mockEval: ReturnType<typeof vi.fn>;
   let mockLogger: {
     info: ReturnType<typeof vi.fn>;
     warn: ReturnType<typeof vi.fn>;
@@ -17,20 +14,11 @@ describe('TokenBudgetService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
 
-    mockGet = vi.fn().mockResolvedValue(null);
-    mockIncrby = vi.fn().mockReturnThis();
-    mockExpire = vi.fn().mockReturnThis();
-    mockPipelineExec = vi.fn().mockResolvedValue([[null, 50], [null, 1]]);
-
-    const mockPipeline = {
-      incrby: mockIncrby,
-      expire: mockExpire,
-      exec: mockPipelineExec,
-    };
+    // checkBudget uses redis.eval — return [exceeded, remaining] pairs
+    mockEval = vi.fn().mockResolvedValue([0, 100_000]); // default: not exceeded
 
     const mockRedis = {
-      get: mockGet,
-      pipeline: vi.fn().mockReturnValue(mockPipeline),
+      eval: mockEval,
     };
 
     mockLogger = {
@@ -52,16 +40,18 @@ describe('TokenBudgetService', () => {
 
   describe('checkBudget', () => {
     it('returns not-exceeded with remaining tokens when under limit', async () => {
-      mockGet.mockResolvedValue('10000'); // 10k tokens used
+      // Lua: current=10000, estimated=5000 → reserves 5k, remaining = 100000-10000-5000 = 85000
+      mockEval.mockResolvedValue([0, 85_000]);
 
       const result = await service.checkBudget(42, 5000);
 
       expect(result.exceeded).toBe(false);
-      expect(result.remaining).toBe(90_000); // 100000 - 10000
+      expect(result.remaining).toBe(85_000);
     });
 
     it('returns not-exceeded when no budget has been used yet', async () => {
-      mockGet.mockResolvedValue(null);
+      // Lua: current=0, estimated=0 → no INCRBY, remaining = 100000
+      mockEval.mockResolvedValue([0, 100_000]);
 
       const result = await service.checkBudget(42, 0);
 
@@ -70,7 +60,8 @@ describe('TokenBudgetService', () => {
     });
 
     it('returns exceeded when usage is already at limit', async () => {
-      mockGet.mockResolvedValue('100000');
+      // Lua: current=100000, estimated=1 → 100001 > 100000, exceeded
+      mockEval.mockResolvedValue([1, 0]);
 
       const result = await service.checkBudget(42, 1);
 
@@ -78,58 +69,61 @@ describe('TokenBudgetService', () => {
     });
 
     it('returns exceeded when adding estimated tokens would exceed limit', async () => {
-      mockGet.mockResolvedValue('90000'); // 90k used
+      // Lua: current=90000, estimated=20000 → 110000 > 100000, exceeded
+      mockEval.mockResolvedValue([1, 10_000]);
 
-      const result = await service.checkBudget(42, 20000); // would push to 110k
+      const result = await service.checkBudget(42, 20_000);
 
       expect(result.exceeded).toBe(true);
     });
 
     it('returns not-exceeded when usage equals limit exactly and estimatedTokens is 0', async () => {
-      mockGet.mockResolvedValue('100000');
+      // Lua: current=100000, estimated=0 → 100000 + 0 = 100000, not > 100000 → not exceeded
+      mockEval.mockResolvedValue([0, 0]);
 
-      // Exactly at limit with 0 extra tokens — current + 0 = 100000, not over
       const result = await service.checkBudget(42, 0);
 
       expect(result.exceeded).toBe(false);
     });
 
     it('warns when budget is exceeded', async () => {
-      mockGet.mockResolvedValue('99999');
+      mockEval.mockResolvedValue([1, 1]);
 
       await service.checkBudget(42, 5000);
 
       expect(mockLogger.warn).toHaveBeenCalledOnce();
     });
+
+    it('passes key, estimatedTokens, max, and TTL to redis.eval', async () => {
+      mockEval.mockResolvedValue([0, 99_000]);
+
+      await service.checkBudget(42, 1000);
+
+      expect(mockEval).toHaveBeenCalledOnce();
+      const [, , key, estimated, max] = mockEval.mock.calls[0] as unknown[];
+      expect(key).toMatch(/^budget:42:/);
+      expect(estimated).toBe('1000');
+      expect(max).toBe('100000');
+    });
   });
 
   describe('recordUsage', () => {
-    it('calls INCRBY with sum of tokensIn + tokensOut', async () => {
+    it('logs info with installationId, runId, tokensIn, and tokensOut', async () => {
       await service.recordUsage(42, 'run-uuid', 1000, 500);
 
-      expect(mockIncrby).toHaveBeenCalledWith(expect.stringMatching(/^budget:42:/), 1500);
-    });
-
-    it('calls EXPIRE with TTL of 32 days', async () => {
-      await service.recordUsage(42, 'run-uuid', 100, 100);
-
-      const expectedTtl = 32 * 24 * 60 * 60;
-      expect(mockExpire).toHaveBeenCalledWith(
-        expect.stringMatching(/^budget:42:/),
-        expectedTtl,
+      expect(mockLogger.info).toHaveBeenCalledOnce();
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ installationId: 42, runId: 'run-uuid', tokensIn: 1000, tokensOut: 500 }),
+        'token usage recorded',
       );
     });
 
-    it('executes the pipeline', async () => {
-      await service.recordUsage(42, 'run-uuid', 100, 100);
+    it('does not call redis.eval for recordUsage (budget managed by checkBudget)', async () => {
+      mockEval.mockClear();
 
-      expect(mockPipelineExec).toHaveBeenCalledOnce();
-    });
-
-    it('logs info after recording usage', async () => {
       await service.recordUsage(42, 'run-uuid', 300, 700);
 
-      expect(mockLogger.info).toHaveBeenCalledOnce();
+      expect(mockEval).not.toHaveBeenCalled();
     });
   });
 });

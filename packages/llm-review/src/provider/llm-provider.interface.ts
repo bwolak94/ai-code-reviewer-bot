@@ -15,7 +15,13 @@ export interface ReviewInput {
   config: ReviewConfig;
 }
 
+export interface ReviewResult {
+  findings: Finding[];
+  tokensIn: number;
+  tokensOut: number;
+}
+
 export interface LLMProvider {
-  review(input: ReviewInput): Promise<Finding[]>;
+  review(input: ReviewInput): Promise<ReviewResult>;
   triage(chunk: DiffChunk): Promise<TriageResult>;
 }

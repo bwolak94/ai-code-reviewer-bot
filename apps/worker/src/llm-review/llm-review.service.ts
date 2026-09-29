@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger as PinoLogger } from 'pino';
 import { TwoStageRouter } from '@repo/llm-review';
@@ -52,8 +52,9 @@ export class LlmReviewService {
     for (const filePath of diffFiles) {
       let diffText: string;
       try {
-        diffText = execSync(
-          `git diff ${baseSha} ${headSha} -- "${filePath}"`,
+        diffText = execFileSync(
+          'git',
+          ['diff', baseSha, headSha, '--', filePath],
           { cwd: repoDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
         );
       } catch (err) {
@@ -76,11 +77,12 @@ export class LlmReviewService {
             return ` ${l.content}`;
           }).join('\n');
 
+          const nonRemovedCount = hunk.lines.filter((l) => l.type !== 'removed').length;
           const chunk: DiffChunk = {
             file: fileDiff.path,
             hunkText,
             startLine: hunk.startLine,
-            endLine: hunk.startLine + hunk.lines.filter((l) => l.type !== 'removed').length - 1,
+            endLine: Math.max(hunk.startLine, hunk.startLine + nonRemovedCount - 1),
             estimatedTokens: Math.ceil(hunkText.length / 4),
           };
           allChunks.push(chunk);

@@ -11,6 +11,9 @@ const TRIAGE_CONCURRENCY = 5;
 const REVIEW_CONCURRENCY = 2;
 const TRIAGE_THRESHOLD = 0.3;
 
+// LOW-03: known monorepo top-level namespaces whose second path segment is the real module name.
+const MONOREPO_NAMESPACES = new Set(['packages', 'apps', 'libs']);
+
 @Injectable()
 export class TwoStageRouter {
   private readonly triageLimit = pLimit(TRIAGE_CONCURRENCY);
@@ -29,8 +32,9 @@ export class TwoStageRouter {
     baseInput: Omit<ReviewInput, 'diffChunks'>,
     installationId: number,
     threshold = TRIAGE_THRESHOLD,
+    runId = '',
   ): Promise<Finding[]> {
-    // Pre-triage budget gate
+    // Pre-triage budget gate (atomically reserves estimated tokens)
     const totalEstimated = chunks.reduce((sum, c) => sum + c.estimatedTokens, 0);
     const preBudget = await this.budget.checkBudget(installationId, totalEstimated);
 
@@ -73,6 +77,8 @@ export class TwoStageRouter {
     // Stage 2: group by module and review with bounded concurrency
     const moduleGroups = this.groupChunksByModule(relevantChunks);
     const allFindings: Finding[] = [];
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
 
     await Promise.all(
       moduleGroups.map((group) =>
@@ -87,8 +93,10 @@ export class TwoStageRouter {
           }
 
           const reviewInput: ReviewInput = { ...baseInput, diffChunks: group.chunks };
-          const findings = await this.provider.review(reviewInput);
+          const { findings, tokensIn, tokensOut } = await this.provider.review(reviewInput);
           allFindings.push(...findings);
+          totalTokensIn += tokensIn;
+          totalTokensOut += tokensOut;
 
           this.logger.info(
             { installationId, module: group.module, findings: findings.length },
@@ -98,7 +106,12 @@ export class TwoStageRouter {
       ),
     );
 
-    return allFindings;
+    // HIGH-02: record actual token usage for telemetry after all reviews complete.
+    await this.budget.recordUsage(installationId, runId, totalTokensIn, totalTokensOut);
+
+    // MED-06: filter findings below the configured confidence threshold.
+    const { confidenceThreshold } = baseInput.config;
+    return allFindings.filter((f) => f.confidence >= confidenceThreshold);
   }
 
   groupChunksByModule(
@@ -108,8 +121,17 @@ export class TwoStageRouter {
 
     for (const chunk of chunks) {
       const parts = chunk.file.split('/');
-      // If the file has no directory component (no '/'), use 'root' as module name
-      const moduleName = parts.length > 1 ? (parts[0] ?? 'root') : 'root';
+      // LOW-03: for monorepo paths (packages/X/..., apps/X/...), the second segment
+      // is the real module name; the first is just a namespace directory.
+      let moduleName: string;
+      if (parts.length > 2 && parts[0] !== undefined && MONOREPO_NAMESPACES.has(parts[0])) {
+        moduleName = parts[1] ?? 'root';
+      } else if (parts.length > 1) {
+        moduleName = parts[0] ?? 'root';
+      } else {
+        moduleName = 'root';
+      }
+
       const existing = moduleMap.get(moduleName);
       if (existing !== undefined) {
         existing.push(chunk);
