@@ -287,9 +287,15 @@ importers:
       '@nestjs/common':
         specifier: ^10.0.0
         version: 10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      ioredis:
+        specifier: ^5.0.0
+        version: 5.11.1
       p-limit:
         specifier: ^6.0.0
         version: 6.2.0
+      pino:
+        specifier: ^8.0.0
+        version: 8.21.0
       zod:
         specifier: ^3.22.0
         version: 3.25.76
@@ -306,12 +312,6 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.4
-      ioredis:
-        specifier: ^5.0.0
-        version: 5.11.1
-      pino:
-        specifier: ^8.0.0
-        version: 8.21.0
       reflect-metadata:
         specifier: ^0.2.0
         version: 0.2.2
