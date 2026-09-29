@@ -16,3 +16,9 @@ export type {
   PublishAnnotationsParams,
   ViolationForAnnotation,
 } from './annotations.js';
+
+export { parseUnifiedDiff, isLineInDiff } from './diff.js';
+export type { DiffLine, DiffHunk, FileDiff } from './diff.js';
+
+export { createPullRequestReview } from './review.js';
+export type { InlineComment, CreatePullRequestReviewParams } from './review.js';

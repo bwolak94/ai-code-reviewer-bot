@@ -1,0 +1,46 @@
+{
+  "name": "@repo/llm-review",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@nestjs/common": "^10.0.0",
+    "p-limit": "^6.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^10.0.0",
+    "@repo/db": "workspace:*",
+    "@swc/core": "^1.7.0",
+    "@types/node": "^22.0.0",
+    "ioredis": "^5.0.0",
+    "pino": "^8.0.0",
+    "reflect-metadata": "^0.2.0",
+    "typescript": "^5.5.0",
+    "unplugin-swc": "^1.4.0",
+    "vitest": "^1.6.0"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^10.0.0"
+  }
+}
