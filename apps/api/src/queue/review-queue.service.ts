@@ -2,7 +2,9 @@ import { Injectable, Inject } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { Logger as PinoLogger } from 'pino';
+import type { Counter } from 'prom-client';
 import type { ReviewJobPayload } from '@repo/db';
+import { METRIC_JOB_ENQUEUED } from '../metrics/metrics.module.js';
 
 /**
  * Enqueues review jobs onto the BullMQ 'review' queue.
@@ -21,6 +23,8 @@ export class ReviewQueueService {
     private readonly queue: Queue<ReviewJobPayload>,
     @Inject('PINO_LOGGER')
     private readonly logger: PinoLogger,
+    @Inject(METRIC_JOB_ENQUEUED)
+    private readonly metricJobEnqueued: Counter,
   ) {}
 
   /**
@@ -50,6 +54,8 @@ export class ReviewQueueService {
       },
       'review job enqueued',
     );
+
+    this.metricJobEnqueued.inc({ repository_id: String(payload.repositoryId) });
   }
 }
 

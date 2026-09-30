@@ -1,4 +1,5 @@
 export { createDb, withTenantContext } from './client.js';
+export { sql } from 'drizzle-orm';
 export type { DrizzleDb, DbSchema } from './client.js';
 
 export {

@@ -8,6 +8,8 @@ import { WorkerDbModule } from '../db/db.module.js';
 import { GithubModule } from '../github/github.module.js';
 import { ArchModule } from '../arch/arch.module.js';
 import { DedupModule } from '../dedup/dedup.module.js';
+import { SandboxModule } from '../sandbox/sandbox.module.js';
+import { WorkerLlmReviewModule } from '../llm-review/llm-review.module.js';
 
 /**
  * Registers the BullMQ processor and all supporting services for review job processing.
@@ -29,6 +31,8 @@ import { DedupModule } from '../dedup/dedup.module.js';
     GithubModule,
     ArchModule,
     DedupModule,
+    SandboxModule,
+    WorkerLlmReviewModule,
   ],
   providers: [ReviewJobProcessor, SupersedeService],
   exports: [SupersedeService],

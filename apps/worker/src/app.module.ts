@@ -7,6 +7,8 @@ import { SharedModule } from './shared/shared.module.js';
 import { GithubModule } from './github/github.module.js';
 import { ArchModule } from './arch/arch.module.js';
 import { WorkerLlmReviewModule } from './llm-review/llm-review.module.js';
+import { MetricsModule } from './metrics/metrics.module.js';
+import { RetentionModule } from './retention/retention.module.js';
 import { getWorkerEnv } from './config/env.js';
 
 /**
@@ -48,6 +50,8 @@ import { getWorkerEnv } from './config/env.js';
     ArchModule,
     ReviewJobModule,
     WorkerLlmReviewModule,
+    MetricsModule,
+    RetentionModule,
   ],
   controllers: [WorkerHealthController],
 })

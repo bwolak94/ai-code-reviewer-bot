@@ -71,6 +71,11 @@ import { getWorkerEnv } from '../config/env.js';
       provide: 'SHUTDOWN_STATE',
       useValue: { isShuttingDown: false } as { isShuttingDown: boolean },
     },
+    {
+      // Optional — if not set, LLM review is skipped gracefully.
+      provide: 'ANTHROPIC_API_KEY',
+      useFactory: (): string | undefined => getWorkerEnv().ANTHROPIC_API_KEY,
+    },
   ],
   exports: [
     'PINO_LOGGER',
@@ -78,6 +83,7 @@ import { getWorkerEnv } from '../config/env.js';
     'APP_AUTH',
     'TOKEN_ENCRYPTION_KEY',
     'SHUTDOWN_STATE',
+    'ANTHROPIC_API_KEY',
   ],
 })
 export class SharedModule {}
