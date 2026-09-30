@@ -130,6 +130,7 @@ export class WebhookService {
         break;
 
       case 'pull_request_review_comment':
+      case 'issue_comment':
         await this.reviewCommentHandler.handle(payload);
         break;
 

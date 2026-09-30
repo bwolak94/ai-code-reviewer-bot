@@ -1,17 +1,41 @@
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { Resource } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+
 /**
- * OpenTelemetry SDK initialisation — stub.
+ * Initialises the OpenTelemetry SDK.
  *
- * Full OTel integration (trace propagation, OTLP exporter, auto-instrumentations)
- * is deferred to a follow-up once @opentelemetry/sdk-node packages are added
- * to the lockfile. This file exports a no-op initTelemetry() so callers compile
- * without changes.
+ * Call this as the very first statement in main.ts, before any NestJS or
+ * framework imports, so auto-instrumentations (HTTP, net, DNS) are registered
+ * before those modules are first loaded.
  *
- * When activating: import this file FIRST in main.ts (before any NestJS imports)
- * and call initTelemetry() before NestFactory.create().
+ * When OTEL_EXPORTER_OTLP_ENDPOINT is not set the function is a no-op — this
+ * keeps local dev and CI fast without needing a collector sidecar.
  */
-// TODO(M5): Replace with real OTel SDK init — add @opentelemetry/sdk-node,
-// @opentelemetry/auto-instrumentations-node, and OTLP exporter packages,
-// then call sdk.start() here before NestFactory.create().
 export function initTelemetry(): void {
-  // no-op stub — replace with SDK init when OTel packages are installed
+  if (process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] === undefined) {
+    return;
+  }
+
+  const sdk = new NodeSDK({
+    resource: new Resource({
+      [ATTR_SERVICE_NAME]: 'ai-code-reviewer-worker',
+      [ATTR_SERVICE_VERSION]: process.env['APP_VERSION'] ?? '0.0.0',
+    }),
+    traceExporter: new OTLPTraceExporter(),
+    instrumentations: [
+      getNodeAutoInstrumentations({
+        // fs instrumentation generates excessive noise with no actionable signal.
+        '@opentelemetry/instrumentation-fs': { enabled: false },
+      }),
+    ],
+  });
+
+  sdk.start();
+
+  process.on('SIGTERM', () => {
+    sdk.shutdown().catch(() => { /* ignore shutdown errors */ });
+  });
 }
