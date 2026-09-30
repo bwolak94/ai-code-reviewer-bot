@@ -54,8 +54,22 @@ async function bootstrap(): Promise<void> {
     },
   );
 
-  // Register a raw body hook so WebhookGuard can access the unmodified bytes.
-  await app.getHttpAdapter().getInstance().addContentTypeParser(
+  app.useLogger({
+    log: (msg: string) => bootstrapLogger.info(msg),
+    error: (msg: string, trace?: string) =>
+      bootstrapLogger.error({ trace }, msg),
+    warn: (msg: string) => bootstrapLogger.warn(msg),
+    debug: (msg: string) => bootstrapLogger.debug(msg),
+    verbose: (msg: string) => bootstrapLogger.trace(msg),
+  });
+
+  // init() registers NestJS's default JSON parser. We then replace it with a
+  // raw-body parser so WebhookGuard can verify the HMAC signature against the
+  // original bytes (parsed JSON may reorder keys and break the signature).
+  await app.init();
+  const fastify = app.getHttpAdapter().getInstance();
+  fastify.removeContentTypeParser('application/json');
+  fastify.addContentTypeParser(
     'application/json',
     { parseAs: 'buffer' },
     (
@@ -65,7 +79,6 @@ async function bootstrap(): Promise<void> {
     ) => {
       try {
         const parsed: unknown = JSON.parse(body.toString('utf8'));
-        // Attach rawBody to the request so WebhookGuard can read it.
         const req = _req as Record<string, unknown>;
         req['rawBody'] = body;
         done(null, parsed);
@@ -74,15 +87,6 @@ async function bootstrap(): Promise<void> {
       }
     },
   );
-
-  app.useLogger({
-    log: (msg: string) => bootstrapLogger.info(msg),
-    error: (msg: string, trace?: string) =>
-      bootstrapLogger.error({ trace }, msg),
-    warn: (msg: string) => bootstrapLogger.warn(msg),
-    debug: (msg: string) => bootstrapLogger.debug(msg),
-    verbose: (msg: string) => bootstrapLogger.trace(msg),
-  });
 
   await app.listen(env.PORT, '0.0.0.0');
 
