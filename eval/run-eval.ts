@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { buildGraph } from '@repo/arch-graph';
-import { evaluateRules } from '@repo/arch-graph';
+import { existsSync } from 'node:fs';
+import { buildGraph, evaluateRules } from '@repo/arch-graph';
 import type { RuleViolation } from '@repo/arch-graph';
 import { loadConfig } from '@repo/config';
 import { EXPECTED_FINDINGS } from './expected-findings.js';
-import type { EvalResult } from './expected-findings.js';
+import type { EvalResult, ExpectedFinding } from './expected-findings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,8 +19,6 @@ const RECALL_THRESHOLD = 1.0;
 // Deterministic fixtures (LLM-only fixtures are excluded here).
 // ---------------------------------------------------------------------------
 const DETERMINISTIC_FIXTURES = ['clean-pr', 'layer-violation-pr', 'cycle-pr'] as const;
-
-type FixtureName = (typeof DETERMINISTIC_FIXTURES)[number];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,26 +36,31 @@ function computeMetrics(tp: number, fp: number, fn: number): {
 }
 
 function fmt(n: number): string {
+  // Threshold comparisons use exact integer ratios; display rounds to 2dp.
   return n.toFixed(2);
 }
 
 /**
- * Returns true if a violation matches a mustMatch expected finding.
- * - When expected.file is non-empty: violation.file must include expected.file.
- * - When expected.file is empty (cycle rule): any violation matching the rule qualifies.
+ * Returns true if a violation matches an expected finding entry.
+ * - When expected.file is non-empty: normalized paths must be equal.
+ * - When expected.file is empty (cycle rule): any violation matching the rule
+ *   and severity qualifies, regardless of file.
  */
 function violationMatchesExpected(
   violation: RuleViolation,
-  expected: { rule: string; file: string },
+  expected: ExpectedFinding,
 ): boolean {
   if (violation.rule !== expected.rule) {
+    return false;
+  }
+  if (violation.severity !== expected.severity) {
     return false;
   }
   if (expected.file === '') {
     // Any file is acceptable (used for cycle violations)
     return true;
   }
-  return violation.file.includes(expected.file);
+  return path.normalize(violation.file) === path.normalize(expected.file);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +76,16 @@ async function runEval(): Promise<void> {
     // Load config from fixture
     const config = loadConfig(fixtureDir);
 
-    // Build dependency graph
+    // Guard: tsconfig.json must exist before passing to ts-morph.
+    const tsconfigAbsPath = path.join(fixtureDir, config.tsconfig);
+    if (!existsSync(tsconfigAbsPath)) {
+      console.error(
+        `[FATAL] ${fixtureName}: tsconfig not found at ${tsconfigAbsPath}`,
+      );
+      process.exit(1);
+    }
+
+    // Build dependency graph — a build error means we cannot trust results.
     let violations: RuleViolation[] = [];
     try {
       const graph = buildGraph({
@@ -87,14 +99,15 @@ async function runEval(): Promise<void> {
         violations = evaluateRules(graph, config.rules, fixtureDir);
       }
     } catch (err) {
-      // Treat graph build errors as empty results but surface the error
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`  [WARN] Failed to build graph for ${fixtureName}: ${message}`);
+      console.error(`[FATAL] Failed to build graph for fixture "${fixtureName}": ${message}`);
+      process.exit(1);
     }
 
     // Retrieve expected findings for this fixture
     const fixtureExpected = EXPECTED_FINDINGS.filter((e) => e.fixture === fixtureName);
     const mustMatchExpected = fixtureExpected.filter((e) => e.mustMatch);
+    const mustNotMatchExpected = fixtureExpected.filter((e) => !e.mustMatch);
 
     // Compute TP and FN from mustMatch entries
     let truePositives = 0;
@@ -107,19 +120,25 @@ async function runEval(): Promise<void> {
       } else {
         falseNegatives++;
         console.error(
-          `  [FN] ${fixtureName}: expected rule="${expected.rule}" file="${expected.file}" was NOT found`,
+          `  [FN] ${fixtureName}: expected rule="${expected.rule}" file="${expected.file}" severity="${expected.severity}" was NOT found`,
         );
       }
     }
 
-    // Compute FP: any violation that does not match any mustMatch expected entry
+    // Compute FP: any violation that does not match any mustMatch: true entry.
+    // mustMatch: false entries provide explicit labels for known-forbidden violations.
     let falsePositives = 0;
     for (const violation of violations) {
       const isExpected = mustMatchExpected.some((e) => violationMatchesExpected(violation, e));
       if (!isExpected) {
         falsePositives++;
+        // Check if there's an explicit mustMatch: false entry for this violation
+        const isExplicitlyForbidden = mustNotMatchExpected.some((e) =>
+          violationMatchesExpected(violation, e),
+        );
+        const label = isExplicitlyForbidden ? '[FP/EXPLICIT]' : '[FP]';
         console.error(
-          `  [FP] ${fixtureName}: unexpected violation rule="${violation.rule}" file="${violation.file}"`,
+          `  ${label} ${fixtureName}: unexpected violation rule="${violation.rule}" file="${violation.file}" severity="${violation.severity}"`,
         );
       }
     }
@@ -191,7 +210,6 @@ async function runEval(): Promise<void> {
 
   if (allPassed) {
     console.log('All deterministic thresholds passed. ✓');
-    process.exit(0);
   } else {
     console.error('');
     console.error('One or more deterministic thresholds FAILED. ✗');

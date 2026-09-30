@@ -9,3 +9,6 @@ rules:
       application: ["domain"]
       infrastructure: ["domain", "application"]
       domain: []
+  no-cycles:
+    scope: module
+    severity: high

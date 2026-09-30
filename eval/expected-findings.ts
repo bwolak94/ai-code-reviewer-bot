@@ -4,7 +4,9 @@ export interface ExpectedFinding {
                          // empty string means "any file in this fixture" (used for cycle rules)
   rule: string;          // rule name, e.g. "layer-dependency"
   severity: 'low' | 'medium' | 'high';
-  mustMatch: boolean;    // true = must be found (recall), false = must NOT be found (precision)
+  mustMatch: boolean;    // true  = must be found (recall assertion)
+                         // false = must NOT be found (precision / no-FP assertion)
+                         //         run-eval labels these [FP/EXPLICIT] if they appear
 }
 
 export interface EvalResult {
@@ -20,22 +22,31 @@ export interface EvalResult {
 /**
  * Ground-truth findings for the deterministic eval harness.
  *
- * mustMatch: true  — the rule violation MUST be detected (recall assertion)
- * mustMatch: false — the rule violation must NOT appear (precision / no-FP assertion)
+ * mustMatch: true  — the rule violation MUST be detected (recall assertion).
+ * mustMatch: false — this violation must NOT appear (explicit precision guard).
+ *                    run-eval counts any unmatched violation as an FP; when a
+ *                    mustMatch: false entry matches it logs [FP/EXPLICIT] for
+ *                    clarity, but the FP count is the same either way.
  *
- * NOTE: logic-in-controller-pr and leaky-repository-pr findings are LLM-only.
- *       They are all marked mustMatch: false so the deterministic eval skips them.
- *       These fixtures will be evaluated in a future milestone when LLM evaluation
- *       is enabled.
+ * LLM-only fixtures (logic-in-controller-pr, leaky-repository-pr) are excluded
+ * from DETERMINISTIC_FIXTURES in run-eval.ts and are not evaluated here.
+ * Their entries are kept for documentation and future LLM milestone use.
  */
 export const EXPECTED_FINDINGS: ExpectedFinding[] = [
   // ---------------------------------------------------------------------------
-  // clean-pr — no violations expected
+  // clean-pr — no violations expected for either rule
   // ---------------------------------------------------------------------------
   {
     fixture: 'clean-pr',
     file: 'src/application/user.service.ts',
     rule: 'layer-dependency',
+    severity: 'high',
+    mustMatch: false,
+  },
+  {
+    fixture: 'clean-pr',
+    file: '',
+    rule: 'no-cycles',
     severity: 'high',
     mustMatch: false,
   },
@@ -66,6 +77,7 @@ export const EXPECTED_FINDINGS: ExpectedFinding[] = [
 
   // ---------------------------------------------------------------------------
   // logic-in-controller-pr — LLM-only findings (future milestone)
+  // These entries are never consulted by the deterministic harness.
   // ---------------------------------------------------------------------------
   {
     fixture: 'logic-in-controller-pr',
@@ -77,6 +89,7 @@ export const EXPECTED_FINDINGS: ExpectedFinding[] = [
 
   // ---------------------------------------------------------------------------
   // leaky-repository-pr — LLM-only findings (future milestone)
+  // These entries are never consulted by the deterministic harness.
   // ---------------------------------------------------------------------------
   {
     fixture: 'leaky-repository-pr',

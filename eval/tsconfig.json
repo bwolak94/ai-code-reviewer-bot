@@ -12,5 +12,7 @@
     }
   },
   "include": ["*.ts"],
+  // fixtures/ is intentionally excluded: each fixture has its own tsconfig.json
+  // and is parsed by ts-morph at eval time, not by the eval package's compiler.
   "exclude": ["node_modules", "fixtures"]
 }

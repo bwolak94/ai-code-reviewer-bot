@@ -28,6 +28,11 @@
     },
     "clean": {
       "cache": false
+    },
+    "eval": {
+      "dependsOn": ["^build"],
+      "inputs": ["*.ts", "fixtures/**", "expected-findings.ts"],
+      "cache": false
     }
   },
   "globalEnv": [
