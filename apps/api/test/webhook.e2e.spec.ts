@@ -6,6 +6,7 @@ import {
 } from '@nestjs/platform-fastify';
 import { createHmac } from 'node:crypto';
 import nock from 'nock';
+import { ThrottlerStorage } from '@nestjs/throttler';
 import 'reflect-metadata';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -138,6 +139,17 @@ describe('WebhookController (e2e)', () => {
     })
       .overrideProvider(ReviewQueueService)
       .useValue(mockReviewQueueService)
+      // Use an in-memory no-op throttler storage in tests — avoids spinning up a
+      // real Redis connection just for rate-limit state.
+      .overrideProvider(ThrottlerStorage)
+      .useValue({
+        increment: vi.fn().mockResolvedValue({
+          totalHits: 1,
+          timeToExpire: 60,
+          isBlocked: false,
+          timeToBlockExpire: 0,
+        }),
+      })
       .compile();
 
     const adapter = new FastifyAdapter({ logger: false });
