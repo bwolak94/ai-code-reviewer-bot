@@ -48,11 +48,12 @@ export class LlmReviewService {
       archContext = '',
     } = params;
 
-    const SHA_RE = /^[0-9a-f]{40}$/i;
-    if (!SHA_RE.test(baseSha)) {
+    // Accept both full 40-char SHAs and symbolic git refs (e.g. FETCH_HEAD, HEAD).
+    const REF_RE = /^[0-9a-f]{40}$|^[A-Z_][A-Z0-9_/]*$/i;
+    if (!REF_RE.test(baseSha)) {
       throw new Error(`runLlmReview: invalid baseSha "${baseSha}"`);
     }
-    if (!SHA_RE.test(headSha)) {
+    if (!REF_RE.test(headSha)) {
       throw new Error(`runLlmReview: invalid headSha "${headSha}"`);
     }
 

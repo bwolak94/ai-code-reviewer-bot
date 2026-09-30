@@ -63,6 +63,13 @@ vi.mock('@repo/config', () => ({
   })),
 }));
 
+// Mock simple-git to avoid requiring a real directory on disk
+vi.mock('simple-git', () => ({
+  simpleGit: vi.fn(() => ({
+    fetch: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
 // Mock packages/github annotations
 vi.mock('@repo/github', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
