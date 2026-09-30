@@ -12,7 +12,7 @@ import { METRIC_JOB_ENQUEUED } from '../metrics/metrics.module.js';
  * SEC-004: The job payload contains ONLY IDs — no display names, full repository
  * names, or account logins. These are resolved from the database inside the worker.
  *
- * BullMQ dedup strategy: jobId = `${installationId}:${repositoryId}:${prNumber}:${headSha}`
+ * BullMQ dedup strategy: jobId = `${installationId}_${repositoryId}_${prNumber}_${headSha}`
  * If the same (installation, repo, PR, SHA) tuple is enqueued twice, BullMQ will
  * silently ignore the second add (natural idempotency via jobId uniqueness).
  */
@@ -64,5 +64,5 @@ export class ReviewQueueService {
  * Exported for use in tests and the worker's supersede logic.
  */
 export function buildJobId(payload: ReviewJobPayload): string {
-  return `${payload.installationId}:${payload.repositoryId}:${payload.prNumber}:${payload.headSha}`;
+  return `${payload.installationId}_${payload.repositoryId}_${payload.prNumber}_${payload.headSha}`;
 }

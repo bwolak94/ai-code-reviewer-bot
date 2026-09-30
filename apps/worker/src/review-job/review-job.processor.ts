@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { simpleGit } from 'simple-git';
 import { createHash } from 'node:crypto';
 import { Inject } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
@@ -247,11 +248,20 @@ export class ReviewJobProcessor extends WorkerHost {
     // Step 7: Load per-repo config from .github/ai-review.yml.
     const config = loadConfig(headDir);
 
+    // Fetch the base branch into the head clone so we can diff against it.
+    // Shallow clone only has --depth=1 of the head branch; the base commit
+    // may not exist. Fetching the base ref gives us 'FETCH_HEAD' which is
+    // the current tip of the base branch — reliable for all shallow clones.
+    const headGit = simpleGit(headDir);
+    await headGit.fetch(['origin', baseRef, '--depth=1']);
+
     // Step 5: Filter the diff using config ignore patterns.
+    // Use 'FETCH_HEAD' (base branch tip) instead of baseSha to avoid
+    // shallow-clone ancestry issues.
     const diffResult = await this.diffFilterService.filter(
       headDir,
-      baseSha,
-      headSha,
+      'FETCH_HEAD',
+      'HEAD',
       config.review.ignore,
     );
 
@@ -294,13 +304,17 @@ export class ReviewJobProcessor extends WorkerHost {
       // contains both head and base checkouts.
       await this.workspaceLimitsService.checkDiskUsage(workspace.dir);
 
-      const baseGraph = buildGraph({
-        workspaceDir: baseDir,
-        tsconfigPath: config.tsconfig,
-        layers: config.layers,
-      });
-
-      baseViolations = evaluateRules(baseGraph, config.rules, baseDir);
+      try {
+        const baseGraph = buildGraph({
+          workspaceDir: baseDir,
+          tsconfigPath: config.tsconfig,
+          layers: config.layers,
+        });
+        baseViolations = evaluateRules(baseGraph, config.rules, baseDir);
+      } catch (err) {
+        this.logger.warn({ err, baseSha }, 'base graph build failed — skipping arch analysis');
+        baseViolations = [];
+      }
 
       await this.graphCacheService.setBaseGraph(
         repositoryId,
@@ -310,12 +324,17 @@ export class ReviewJobProcessor extends WorkerHost {
     }
 
     // Step 9: Build head graph.
-    const headGraph = buildGraph({
-      workspaceDir: headDir,
-      tsconfigPath: config.tsconfig,
-      layers: config.layers,
-    });
-    const headViolations = evaluateRules(headGraph, config.rules, headDir);
+    let headViolations: typeof baseViolations = [];
+    try {
+      const headGraph = buildGraph({
+        workspaceDir: headDir,
+        tsconfigPath: config.tsconfig,
+        layers: config.layers,
+      });
+      headViolations = evaluateRules(headGraph, config.rules, headDir);
+    } catch (err) {
+      this.logger.warn({ err, headSha }, 'head graph build failed — skipping arch analysis');
+    }
 
     // Step 10: Compute delta — only violations new in head.
     const deltaViolations = graphDelta(baseViolations, headViolations);

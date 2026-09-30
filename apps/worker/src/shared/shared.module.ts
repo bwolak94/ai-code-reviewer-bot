@@ -57,7 +57,7 @@ import { getWorkerEnv } from '../config/env.js';
         const env = getWorkerEnv();
         return new AppAuth({
           appId: env.GITHUB_APP_ID,
-          privateKey: env.GITHUB_PRIVATE_KEY,
+          privateKey: env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n'),
         });
       },
     },
