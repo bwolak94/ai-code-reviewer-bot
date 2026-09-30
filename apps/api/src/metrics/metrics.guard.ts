@@ -1,5 +1,4 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
-import type { Request } from 'express';
 
 /**
  * Guards the GET /metrics endpoint from unauthenticated access.
@@ -14,7 +13,7 @@ import type { Request } from 'express';
 @Injectable()
 export class MetricsGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
-    const req = context.switchToHttp().getRequest<Request>();
+    const req = context.switchToHttp().getRequest<{ headers: Record<string, string | undefined>; ip?: string; socket: { remoteAddress?: string } }>();
     const token = process.env['METRICS_TOKEN'];
 
     if (token) {
