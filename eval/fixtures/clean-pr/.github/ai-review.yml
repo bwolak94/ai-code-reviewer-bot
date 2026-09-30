@@ -1,0 +1,14 @@
+version: 1
+layers:
+  domain: ["src/domain/**"]
+  application: ["src/application/**"]
+  infrastructure: ["src/infrastructure/**"]
+rules:
+  layer-dependency:
+    allow:
+      application: ["domain"]
+      infrastructure: ["domain", "application"]
+      domain: []
+  no-cycles:
+    scope: module
+    severity: high

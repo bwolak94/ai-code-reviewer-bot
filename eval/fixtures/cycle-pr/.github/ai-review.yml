@@ -1,0 +1,6 @@
+version: 1
+layers: {}
+rules:
+  no-cycles:
+    scope: module
+    severity: high
