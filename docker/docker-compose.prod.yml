@@ -1,0 +1,101 @@
+version: "3.9"
+
+# Production deployment reference compose file.
+# Required environment variables (pass via .env or CI secrets):
+#   GITHUB_REPOSITORY   — e.g. acme/ai-code-reviewer-bot
+#   IMAGE_TAG           — git SHA or semver tag (defaults to "latest")
+#   DATABASE_URL        — postgres://user:password@postgres:5432/aireview
+#   REDIS_QUEUE_URL     — redis://:${REDIS_PASSWORD}@redis:6379
+#   REDIS_CACHE_URL     — redis://:${REDIS_PASSWORD}@redis:6379/1
+#   REDIS_PASSWORD      — strong random secret
+#   POSTGRES_PASSWORD   — strong random secret
+#   GITHUB_APP_ID       — GitHub App numeric ID
+#   GITHUB_PRIVATE_KEY  — GitHub App private key (PEM, newlines escaped as \n)
+#   GITHUB_WEBHOOK_SECRET — webhook HMAC secret
+#   TOKEN_ENCRYPTION_KEY  — 64-char hex AES-256 key
+
+services:
+  api:
+    image: ghcr.io/${GITHUB_REPOSITORY}/api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_QUEUE_URL: ${REDIS_QUEUE_URL}
+      REDIS_CACHE_URL: ${REDIS_CACHE_URL}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    image: ghcr.io/${GITHUB_REPOSITORY}/worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_QUEUE_URL: ${REDIS_QUEUE_URL}
+      REDIS_CACHE_URL: ${REDIS_CACHE_URL}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aireview
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: aireview
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aireview -d aireview"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      # MED-06: Use REDISCLI_AUTH env var instead of -a flag to avoid the
+      # password appearing in the process list (ps aux output).
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD} redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  postgres_data:
+  redis_data:

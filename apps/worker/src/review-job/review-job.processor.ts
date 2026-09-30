@@ -3,6 +3,7 @@ import { Inject } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import type { Logger as PinoLogger } from 'pino';
+import type { Counter, Histogram } from 'prom-client';
 import {
   ReviewRunRepository,
   FindingRepository,
@@ -24,6 +25,13 @@ import { DiffFilterService } from '../diff/diff-filter.service.js';
 import { InstallationTokenService } from '../github/installation-token.service.js';
 import { GraphCacheService } from '../arch/graph-cache.service.js';
 import { FindingDedupService } from '../dedup/dedup.service.js';
+import { WorkspaceLimitsService } from '../sandbox/workspace-limits.service.js';
+import {
+  METRIC_JOB_COMPLETED,
+  METRIC_JOB_FAILED,
+  METRIC_FINDINGS_TOTAL,
+  METRIC_RUN_DURATION,
+} from '../metrics/metrics.tokens.js';
 
 /**
  * BullMQ job processor for the 'review' queue.
@@ -61,6 +69,15 @@ export class ReviewJobProcessor extends WorkerHost {
     private readonly findingRepository: FindingRepository,
     private readonly graphCacheService: GraphCacheService,
     private readonly findingDedupService: FindingDedupService,
+    private readonly workspaceLimitsService: WorkspaceLimitsService,
+    @Inject(METRIC_JOB_COMPLETED)
+    private readonly metricJobCompleted: Counter,
+    @Inject(METRIC_JOB_FAILED)
+    private readonly metricJobFailed: Counter,
+    @Inject(METRIC_FINDINGS_TOTAL)
+    private readonly metricFindingsTotal: Counter,
+    @Inject(METRIC_RUN_DURATION)
+    private readonly metricRunDuration: Histogram,
   ) {
     super();
   }
@@ -110,195 +127,37 @@ export class ReviewJobProcessor extends WorkerHost {
     const workspace = await this.workspaceService.create(jobId);
 
     let runId: string | undefined;
+    const pipelineStart = Date.now();
+
+    // HIGH-04: Destructure { promise, cancel } so the timer can be cleared
+    // once the pipeline resolves or rejects, preventing a leaking timer.
+    const { promise: timeoutPromise, cancel: cancelTimeout } =
+      this.workspaceLimitsService.createTimeoutPromise(jobId);
 
     try {
-      // Resolve owner and repo name from DB
-      const owner = await this.resolveOwnerRepo(repositoryId);
-      const repoName = await this.resolveRepoName(repositoryId);
-
-      // Step 4: Shallow-clone the head ref into a 'head' subdirectory.
-      const { repoDir: headDir } = await this.cloneService.clone(
-        owner,
-        repoName,
-        headRef,
-        token,
-        path.join(workspace.dir, 'head'),
-      );
-
-      // Step 7: Load per-repo config from .github/ai-review.yml.
-      const config = loadConfig(headDir);
-
-      // Step 5: Filter the diff using config ignore patterns.
-      const diffResult = await this.diffFilterService.filter(
-        headDir,
-        baseSha,
-        headSha,
-        config.review.ignore,
-      );
-
-      // Step 6: Persist the ReviewRun with status 'running'.
-      const run = await withTenantContext(this.db, installationId, async () => {
-        return this.reviewRunRepository.createRun({
+      await Promise.race([
+        this._runPipeline(
+          jobId,
+          installationId,
           repositoryId,
           prNumber,
           baseSha,
           headSha,
-          status: 'running',
-        });
-      });
-
-      runId = run.id;
-
-      // Step 8: Get or build base graph violations.
-      let baseViolations = await this.graphCacheService.getBaseGraph(
-        repositoryId,
-        baseSha,
-      );
-
-      if (baseViolations === null) {
-        this.logger.debug(
-          { repositoryId, baseSha },
-          'graph-cache miss — cloning base ref and building base graph',
-        );
-
-        // CRIT-3: Clone the base ref into a separate subdirectory so the base
-        // graph is built from the actual base commit, not the head checkout.
-        const { repoDir: baseDir } = await this.cloneService.clone(
-          owner,
-          repoName,
           baseRef,
+          headRef,
           token,
-          path.join(workspace.dir, 'base'),
-        );
-
-        const baseGraph = buildGraph({
-          workspaceDir: baseDir,
-          tsconfigPath: config.tsconfig,
-          layers: config.layers,
-        });
-
-        baseViolations = evaluateRules(baseGraph, config.rules, baseDir);
-
-        await this.graphCacheService.setBaseGraph(
-          repositoryId,
-          baseSha,
-          baseViolations,
-        );
-      }
-
-      // Step 9: Build head graph.
-      const headGraph = buildGraph({
-        workspaceDir: headDir,
-        tsconfigPath: config.tsconfig,
-        layers: config.layers,
-      });
-      const headViolations = evaluateRules(headGraph, config.rules, headDir);
-
-      // Step 10: Compute delta — only violations new in head.
-      const deltaViolations = graphDelta(baseViolations, headViolations);
-
-      this.logger.info(
-        {
-          jobId,
-          installationId,
-          repositoryId,
-          prNumber,
-          headSha,
-          filteredFiles: diffResult.filteredFiles.length,
-          summaryOnlyMode: diffResult.summaryOnlyMode,
-          baseViolations: baseViolations.length,
-          headViolations: headViolations.length,
-          deltaViolations: deltaViolations.length,
-        },
-        'graph analysis complete',
-      );
-
-      // Step 10.5: Deduplicate — filter suppressed findings before publishing.
-      // Must run BEFORE inserting findings for this run so all are correctly marked isNew.
-      const dedupResults = await this.findingDedupService.deduplicateFindings(
-        repositoryId,
-        prNumber,
-        deltaViolations.map((v) => ({
-          fingerprint: v.fingerprint,
-          source: 'graph',
-          ruleOrCategory: v.rule,
-          severity: v.severity,
-          file: v.file,
-          line: v.line,
-          rationale: v.message,
-        })),
-      );
-
-      const suppressedFingerprints = new Set(
-        dedupResults
-          .filter((r) => r.isSuppressed)
-          .map((r) => r.finding.fingerprint),
-      );
-
-      const violationsToPublish = deltaViolations.filter(
-        (v) => !suppressedFingerprints.has(v.fingerprint),
-      );
-
-      // Step 11: Publish check run annotations.
-      const conclusion = determineConclusion(
-        violationsToPublish,
-        config.review.min_severity_inline,
-      );
-
-      const octokit = new Octokit({ auth: token });
-
-      // Only publish if we have a check run ID — it may not be set in all flows.
-      const checkRunId = run.checkRunId;
-      if (checkRunId !== null && checkRunId !== undefined) {
-        await publishCheckRunAnnotations({
-          octokit,
-          owner,
-          repo: repoName,
-          checkRunId,
-          violations: violationsToPublish,
-          conclusion,
-          summaryTitle: 'Architectural Review',
-        });
-      }
-
-      // Step 12: Persist findings to DB (all delta violations, including suppressed,
-      // so future dedup lookups can reference them).
-      if (deltaViolations.length > 0) {
-        const newFindings: NewFinding[] = deltaViolations.map((v) => ({
-          runId: run.id,
-          fingerprint: v.fingerprint,
-          source: 'graph',
-          ruleOrCategory: v.rule,
-          severity: v.severity,
-          file: v.file,
-          line: v.line,
-          rationale: v.message,
-        }));
-
-        await withTenantContext(this.db, installationId, async () => {
-          await this.findingRepository.insertFindings(run.id, newFindings);
-        });
-      }
-
-      // Step 13: Update ReviewRun status to 'completed'.
-      await withTenantContext(this.db, installationId, async () => {
-        await this.reviewRunRepository.updateRunStatus(run.id, 'completed');
-      });
-
-      this.logger.info(
-        {
-          jobId,
-          installationId,
-          repositoryId,
-          prNumber,
-          headSha,
-          runId: run.id,
-          conclusion,
-        },
-        'review job completed',
-      );
+          workspace,
+          pipelineStart,
+          (id: string) => {
+            runId = id;
+          },
+        ),
+        timeoutPromise,
+      ]);
+      cancelTimeout();
     } catch (err) {
-      // Attempt to mark the run as failed if we have a run ID
+      cancelTimeout();
+      // Attempt to mark the run as failed if we have a run ID.
       // MED-3: Assign to a const so TypeScript can narrow to `string` without a cast.
       const failedRunId = runId;
       if (failedRunId !== undefined) {
@@ -313,11 +172,231 @@ export class ReviewJobProcessor extends WorkerHost {
           );
         }
       }
+      this.metricJobFailed.inc({ reason: 'pipeline_error' });
+      const durationSeconds = (Date.now() - pipelineStart) / 1000;
+      this.metricRunDuration.observe({ conclusion: 'failure' }, durationSeconds);
       throw err;
     } finally {
       // Always clean up the workspace regardless of success or failure.
       await workspace.cleanup();
     }
+  }
+
+  private async _runPipeline(
+    jobId: string,
+    installationId: number,
+    repositoryId: number,
+    prNumber: number,
+    baseSha: string,
+    headSha: string,
+    baseRef: string,
+    headRef: string,
+    token: string,
+    workspace: { dir: string; cleanup: () => Promise<void> },
+    pipelineStart: number,
+    setRunId: (id: string) => void,
+  ): Promise<void> {
+    // Resolve owner and repo name from DB
+    const owner = await this.resolveOwnerRepo(repositoryId);
+    const repoName = await this.resolveRepoName(repositoryId);
+
+    // Step 4: Shallow-clone the head ref into a 'head' subdirectory.
+    const { repoDir: headDir } = await this.cloneService.clone(
+      owner,
+      repoName,
+      headRef,
+      token,
+      path.join(workspace.dir, 'head'),
+    );
+
+    // Check disk usage after clone completes.
+    await this.workspaceLimitsService.checkDiskUsage(workspace.dir);
+
+    // Step 7: Load per-repo config from .github/ai-review.yml.
+    const config = loadConfig(headDir);
+
+    // Step 5: Filter the diff using config ignore patterns.
+    const diffResult = await this.diffFilterService.filter(
+      headDir,
+      baseSha,
+      headSha,
+      config.review.ignore,
+    );
+
+    // Step 6: Persist the ReviewRun with status 'running'.
+    const run = await withTenantContext(this.db, installationId, async () => {
+      return this.reviewRunRepository.createRun({
+        repositoryId,
+        prNumber,
+        baseSha,
+        headSha,
+        status: 'running',
+      });
+    });
+
+    setRunId(run.id);
+
+    // Step 8: Get or build base graph violations.
+    let baseViolations = await this.graphCacheService.getBaseGraph(
+      repositoryId,
+      baseSha,
+    );
+
+    if (baseViolations === null) {
+      this.logger.debug(
+        { repositoryId, baseSha },
+        'graph-cache miss — cloning base ref and building base graph',
+      );
+
+      // CRIT-3: Clone the base ref into a separate subdirectory so the base
+      // graph is built from the actual base commit, not the head checkout.
+      const { repoDir: baseDir } = await this.cloneService.clone(
+        owner,
+        repoName,
+        baseRef,
+        token,
+        path.join(workspace.dir, 'base'),
+      );
+
+      // HIGH-03: Check disk usage again after base clone — the workspace now
+      // contains both head and base checkouts.
+      await this.workspaceLimitsService.checkDiskUsage(workspace.dir);
+
+      const baseGraph = buildGraph({
+        workspaceDir: baseDir,
+        tsconfigPath: config.tsconfig,
+        layers: config.layers,
+      });
+
+      baseViolations = evaluateRules(baseGraph, config.rules, baseDir);
+
+      await this.graphCacheService.setBaseGraph(
+        repositoryId,
+        baseSha,
+        baseViolations,
+      );
+    }
+
+    // Step 9: Build head graph.
+    const headGraph = buildGraph({
+      workspaceDir: headDir,
+      tsconfigPath: config.tsconfig,
+      layers: config.layers,
+    });
+    const headViolations = evaluateRules(headGraph, config.rules, headDir);
+
+    // Step 10: Compute delta — only violations new in head.
+    const deltaViolations = graphDelta(baseViolations, headViolations);
+
+    this.logger.info(
+      {
+        jobId,
+        installationId,
+        repositoryId,
+        prNumber,
+        headSha,
+        filteredFiles: diffResult.filteredFiles.length,
+        summaryOnlyMode: diffResult.summaryOnlyMode,
+        baseViolations: baseViolations.length,
+        headViolations: headViolations.length,
+        deltaViolations: deltaViolations.length,
+      },
+      'graph analysis complete',
+    );
+
+    // Step 10.5: Deduplicate — filter suppressed findings before publishing.
+    // Must run BEFORE inserting findings for this run so all are correctly marked isNew.
+    const dedupResults = await this.findingDedupService.deduplicateFindings(
+      repositoryId,
+      prNumber,
+      deltaViolations.map((v) => ({
+        fingerprint: v.fingerprint,
+        source: 'graph',
+        ruleOrCategory: v.rule,
+        severity: v.severity,
+        file: v.file,
+        line: v.line,
+        rationale: v.message,
+      })),
+    );
+
+    const suppressedFingerprints = new Set(
+      dedupResults
+        .filter((r) => r.isSuppressed)
+        .map((r) => r.finding.fingerprint),
+    );
+
+    const violationsToPublish = deltaViolations.filter(
+      (v) => !suppressedFingerprints.has(v.fingerprint),
+    );
+
+    // Step 11: Publish check run annotations.
+    const conclusion = determineConclusion(
+      violationsToPublish,
+      config.review.min_severity_inline,
+    );
+
+    const octokit = new Octokit({ auth: token });
+
+    // Only publish if we have a check run ID — it may not be set in all flows.
+    const checkRunId = run.checkRunId;
+    if (checkRunId !== null && checkRunId !== undefined) {
+      await publishCheckRunAnnotations({
+        octokit,
+        owner,
+        repo: repoName,
+        checkRunId,
+        violations: violationsToPublish,
+        conclusion,
+        summaryTitle: 'Architectural Review',
+      });
+    }
+
+    // Step 12: Persist findings to DB (all delta violations, including suppressed,
+    // so future dedup lookups can reference them).
+    if (deltaViolations.length > 0) {
+      const newFindings: NewFinding[] = deltaViolations.map((v) => ({
+        runId: run.id,
+        fingerprint: v.fingerprint,
+        source: 'graph',
+        ruleOrCategory: v.rule,
+        severity: v.severity,
+        file: v.file,
+        line: v.line,
+        rationale: v.message,
+      }));
+
+      await withTenantContext(this.db, installationId, async () => {
+        await this.findingRepository.insertFindings(run.id, newFindings);
+      });
+
+      // Record findings metrics by source and severity.
+      for (const v of deltaViolations) {
+        this.metricFindingsTotal.inc({ source: 'graph', severity: v.severity });
+      }
+    }
+
+    // Step 13: Update ReviewRun status to 'completed'.
+    await withTenantContext(this.db, installationId, async () => {
+      await this.reviewRunRepository.updateRunStatus(run.id, 'completed');
+    });
+
+    this.logger.info(
+      {
+        jobId,
+        installationId,
+        repositoryId,
+        prNumber,
+        headSha,
+        runId: run.id,
+        conclusion,
+      },
+      'review job completed',
+    );
+
+    const durationSeconds = (Date.now() - pipelineStart) / 1000;
+    this.metricJobCompleted.inc({ conclusion });
+    this.metricRunDuration.observe({ conclusion }, durationSeconds);
   }
 
   /**

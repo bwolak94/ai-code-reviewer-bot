@@ -11,6 +11,13 @@ import { InstallationTokenService } from '../src/github/installation-token.servi
 import { ReviewRunRepository, FindingRepository } from '@repo/db';
 import type { ReviewJobPayload } from '@repo/db';
 import { GraphCacheService } from '../src/arch/graph-cache.service.js';
+import { WorkspaceLimitsService } from '../src/sandbox/workspace-limits.service.js';
+import {
+  METRIC_JOB_COMPLETED,
+  METRIC_JOB_FAILED,
+  METRIC_FINDINGS_TOTAL,
+  METRIC_RUN_DURATION,
+} from '../src/metrics/metrics.module.js';
 
 // Mock withTenantContext to call through immediately — avoids needing a real
 // DB transaction in unit tests while still exercising the repository call.
@@ -197,6 +204,32 @@ describe('ReviewJobProcessor', () => {
           useValue: {
             deduplicateFindings: vi.fn().mockResolvedValue([]),
           },
+        },
+        {
+          provide: WorkspaceLimitsService,
+          useValue: {
+            createTimeoutPromise: vi.fn().mockReturnValue({
+              promise: new Promise(() => {/* never resolves */}),
+              cancel: vi.fn(),
+            }),
+            checkDiskUsage: vi.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: METRIC_JOB_COMPLETED,
+          useValue: { inc: vi.fn() },
+        },
+        {
+          provide: METRIC_JOB_FAILED,
+          useValue: { inc: vi.fn() },
+        },
+        {
+          provide: METRIC_FINDINGS_TOTAL,
+          useValue: { inc: vi.fn() },
+        },
+        {
+          provide: METRIC_RUN_DURATION,
+          useValue: { observe: vi.fn() },
         },
         // BullMQ queue token is not directly needed by the processor in tests
         // but the module wiring may require it; provide a stub.

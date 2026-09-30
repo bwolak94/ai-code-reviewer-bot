@@ -1,9 +1,11 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger as PinoLogger } from 'pino';
+import type { Counter } from 'prom-client';
 import { InstallationService } from '../installation/installation.service.js';
 import { ReviewQueueService } from '../queue/review-queue.service.js';
 import { CheckRunHandler } from './handlers/check-run.handler.js';
 import { ReviewCommentHandler } from './handlers/review-comment.handler.js';
+import { METRIC_WEBHOOK_RECEIVED } from '../metrics/metrics.module.js';
 
 type PullRequestAction =
   | 'opened'
@@ -62,6 +64,8 @@ export class WebhookService {
   constructor(
     @Inject('PINO_LOGGER')
     private readonly logger: PinoLogger,
+    @Inject(METRIC_WEBHOOK_RECEIVED)
+    private readonly metricWebhookReceived: Counter,
     private readonly installationService: InstallationService,
     private readonly reviewQueueService: ReviewQueueService,
     private readonly checkRunHandler: CheckRunHandler,
@@ -93,6 +97,8 @@ export class WebhookService {
       },
       'webhook received',
     );
+
+    this.metricWebhookReceived.inc({ event, action });
 
     switch (event) {
       case 'pull_request':
