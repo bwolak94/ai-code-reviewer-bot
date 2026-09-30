@@ -8,16 +8,17 @@ import { CloneService } from '../src/clone/clone.service.js';
 import { WorkspaceService } from '../src/clone/workspace.service.js';
 import { DiffFilterService } from '../src/diff/diff-filter.service.js';
 import { InstallationTokenService } from '../src/github/installation-token.service.js';
-import { ReviewRunRepository, FindingRepository } from '@repo/db';
+import { ReviewRunRepository, FindingRepository, InstallationRepository } from '@repo/db';
 import type { ReviewJobPayload } from '@repo/db';
 import { GraphCacheService } from '../src/arch/graph-cache.service.js';
 import { WorkspaceLimitsService } from '../src/sandbox/workspace-limits.service.js';
+import { LlmReviewService } from '../src/llm-review/llm-review.service.js';
 import {
   METRIC_JOB_COMPLETED,
   METRIC_JOB_FAILED,
   METRIC_FINDINGS_TOTAL,
   METRIC_RUN_DURATION,
-} from '../src/metrics/metrics.module.js';
+} from '../src/metrics/metrics.tokens.js';
 
 // Mock withTenantContext to call through immediately — avoids needing a real
 // DB transaction in unit tests while still exercising the repository call.
@@ -113,6 +114,8 @@ describe('ReviewJobProcessor', () => {
   let mockInsertFindings: ReturnType<typeof vi.fn>;
   let mockGetBaseGraph: ReturnType<typeof vi.fn>;
   let mockSetBaseGraph: ReturnType<typeof vi.fn>;
+  let mockFindRepositoryById: ReturnType<typeof vi.fn>;
+  let mockRunLlmReview: ReturnType<typeof vi.fn>;
   let workspaceCleanup: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
@@ -144,6 +147,8 @@ describe('ReviewJobProcessor', () => {
     mockInsertFindings = vi.fn().mockResolvedValue([]);
     mockGetBaseGraph = vi.fn().mockResolvedValue(null);
     mockSetBaseGraph = vi.fn().mockResolvedValue(undefined);
+    mockFindRepositoryById = vi.fn().mockResolvedValue({ id: 200, fullName: 'test-owner/test-repo', installationId: 100 });
+    mockRunLlmReview = vi.fn().mockResolvedValue({ inlineFindings: [], summaryOnlyFindings: [] });
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -214,6 +219,14 @@ describe('ReviewJobProcessor', () => {
             }),
             checkDiskUsage: vi.fn().mockResolvedValue(undefined),
           },
+        },
+        {
+          provide: InstallationRepository,
+          useValue: { findRepositoryById: mockFindRepositoryById },
+        },
+        {
+          provide: LlmReviewService,
+          useValue: { runLlmReview: mockRunLlmReview },
         },
         {
           provide: METRIC_JOB_COMPLETED,

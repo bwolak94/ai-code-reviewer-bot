@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { Inject } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
@@ -7,6 +8,7 @@ import type { Counter, Histogram } from 'prom-client';
 import {
   ReviewRunRepository,
   FindingRepository,
+  InstallationRepository,
   withTenantContext,
 } from '@repo/db';
 import type { ReviewJobPayload, DrizzleDb, NewFinding } from '@repo/db';
@@ -16,7 +18,12 @@ import {
   graphDelta,
 } from '@repo/arch-graph';
 import { loadConfig } from '@repo/config';
-import { publishCheckRunAnnotations, determineConclusion } from '@repo/github';
+import {
+  publishCheckRunAnnotations,
+  determineConclusion,
+} from '@repo/github';
+import type { ViolationForAnnotation } from '@repo/github';
+import type { Finding, ReviewConfig } from '@repo/llm-review';
 import { Octokit } from '@octokit/rest';
 import { SupersedeService } from './supersede.service.js';
 import { CloneService } from '../clone/clone.service.js';
@@ -26,12 +33,24 @@ import { InstallationTokenService } from '../github/installation-token.service.j
 import { GraphCacheService } from '../arch/graph-cache.service.js';
 import { FindingDedupService } from '../dedup/dedup.service.js';
 import { WorkspaceLimitsService } from '../sandbox/workspace-limits.service.js';
+import { LlmReviewService } from '../llm-review/llm-review.service.js';
 import {
   METRIC_JOB_COMPLETED,
   METRIC_JOB_FAILED,
   METRIC_FINDINGS_TOTAL,
   METRIC_RUN_DURATION,
 } from '../metrics/metrics.tokens.js';
+
+/**
+ * Generates a stable SHA-256 fingerprint for an LLM finding.
+ * Uses source, category, file, line, and the first 80 chars of the title
+ * to produce a deterministic 64-char hex string.
+ */
+function computeLlmFingerprint(finding: Finding): string {
+  return createHash('sha256')
+    .update(`llm:${finding.category}:${finding.file}:${finding.line}:${finding.title.slice(0, 80)}`)
+    .digest('hex');
+}
 
 /**
  * BullMQ job processor for the 'review' queue.
@@ -70,6 +89,8 @@ export class ReviewJobProcessor extends WorkerHost {
     private readonly graphCacheService: GraphCacheService,
     private readonly findingDedupService: FindingDedupService,
     private readonly workspaceLimitsService: WorkspaceLimitsService,
+    private readonly installationRepository: InstallationRepository,
+    private readonly llmReviewService: LlmReviewService,
     @Inject(METRIC_JOB_COMPLETED)
     private readonly metricJobCompleted: Counter,
     @Inject(METRIC_JOB_FAILED)
@@ -196,9 +217,8 @@ export class ReviewJobProcessor extends WorkerHost {
     pipelineStart: number,
     setRunId: (id: string) => void,
   ): Promise<void> {
-    // Resolve owner and repo name from DB
-    const owner = await this.resolveOwnerRepo(repositoryId);
-    const repoName = await this.resolveRepoName(repositoryId);
+    // Resolve owner and repo name from DB (repositories.fullName = "owner/repo").
+    const { owner, repoName } = await this.resolveRepo(repositoryId);
 
     // Step 4: Shallow-clone the head ref into a 'head' subdirectory.
     const { repoDir: headDir } = await this.cloneService.clone(
@@ -304,20 +324,75 @@ export class ReviewJobProcessor extends WorkerHost {
       'graph analysis complete',
     );
 
-    // Step 10.5: Deduplicate — filter suppressed findings before publishing.
+    // Step 10.7: LLM semantic review (skipped when llm.enabled=false or no API key).
+    const llmReviewConfig: ReviewConfig = {
+      triageThreshold: 0.5,
+      confidenceThreshold: 0.7,
+      maxInlineComments: config.review.max_inline_comments,
+      minSeverityInline: config.review.min_severity_inline,
+    };
+
+    let llmInlineFindings: Finding[] = [];
+    let llmSummaryFindings: Finding[] = [];
+
+    if (config.llm.enabled && !diffResult.summaryOnlyMode) {
+      try {
+        const llmResult = await this.llmReviewService.runLlmReview({
+          installationId,
+          runId: run.id,
+          repoDir: headDir,
+          baseSha,
+          headSha,
+          diffFiles: diffResult.filteredFiles,
+          deterministicViolations: deltaViolations.map((v) => ({
+            rule: v.rule,
+            file: v.file,
+            line: v.line,
+            message: v.message,
+            severity: v.severity,
+          })),
+          config: llmReviewConfig,
+          archContext: config.llm.context,
+        });
+        llmInlineFindings = llmResult.inlineFindings;
+        llmSummaryFindings = llmResult.summaryOnlyFindings;
+      } catch (err) {
+        // LLM review is non-fatal — log and continue with graph-only results.
+        this.logger.warn({ err, jobId, runId: run.id }, 'LLM review failed — continuing without LLM findings');
+      }
+    }
+
+    // Compute fingerprints for all LLM findings.
+    const llmFindingsWithFingerprint = [...llmInlineFindings, ...llmSummaryFindings].map((f) => ({
+      finding: f,
+      fingerprint: computeLlmFingerprint(f),
+    }));
+
+    // Step 10.5: Deduplicate all findings (graph + LLM inline) before publishing.
     // Must run BEFORE inserting findings for this run so all are correctly marked isNew.
     const dedupResults = await this.findingDedupService.deduplicateFindings(
       repositoryId,
       prNumber,
-      deltaViolations.map((v) => ({
-        fingerprint: v.fingerprint,
-        source: 'graph',
-        ruleOrCategory: v.rule,
-        severity: v.severity,
-        file: v.file,
-        line: v.line,
-        rationale: v.message,
-      })),
+      [
+        ...deltaViolations.map((v) => ({
+          fingerprint: v.fingerprint,
+          source: 'graph' as const,
+          ruleOrCategory: v.rule,
+          severity: v.severity,
+          file: v.file,
+          line: v.line,
+          rationale: v.message,
+        })),
+        ...llmFindingsWithFingerprint.map(({ finding, fingerprint }) => ({
+          fingerprint,
+          source: 'llm' as const,
+          ruleOrCategory: finding.category,
+          severity: finding.severity,
+          file: finding.file,
+          line: finding.line,
+          rationale: finding.title,
+        })),
+      ],
     );
 
     const suppressedFingerprints = new Set(
@@ -326,9 +401,29 @@ export class ReviewJobProcessor extends WorkerHost {
         .map((r) => r.finding.fingerprint),
     );
 
-    const violationsToPublish = deltaViolations.filter(
-      (v) => !suppressedFingerprints.has(v.fingerprint),
-    );
+    const violationsToPublish: ViolationForAnnotation[] = [
+      ...deltaViolations
+        .filter((v) => !suppressedFingerprints.has(v.fingerprint))
+        .map((v) => ({
+          rule: v.rule,
+          file: v.file,
+          line: v.line,
+          message: v.message,
+          severity: v.severity,
+          fingerprint: v.fingerprint,
+        })),
+      ...llmInlineFindings
+        .map((f) => ({ finding: f, fingerprint: computeLlmFingerprint(f) }))
+        .filter(({ fingerprint }) => !suppressedFingerprints.has(fingerprint))
+        .map(({ finding, fingerprint }) => ({
+          rule: finding.category,
+          file: finding.file,
+          line: finding.line,
+          message: finding.title,
+          severity: finding.severity,
+          fingerprint,
+        })),
+    ];
 
     // Step 11: Publish check run annotations.
     const conclusion = determineConclusion(
@@ -352,27 +447,42 @@ export class ReviewJobProcessor extends WorkerHost {
       });
     }
 
-    // Step 12: Persist findings to DB (all delta violations, including suppressed,
+    // Step 12: Persist findings to DB (all findings, including suppressed,
     // so future dedup lookups can reference them).
-    if (deltaViolations.length > 0) {
-      const newFindings: NewFinding[] = deltaViolations.map((v) => ({
+    const allNewFindings: NewFinding[] = [
+      ...deltaViolations.map((v) => ({
         runId: run.id,
         fingerprint: v.fingerprint,
-        source: 'graph',
+        source: 'graph' as const,
         ruleOrCategory: v.rule,
         severity: v.severity,
         file: v.file,
         line: v.line,
         rationale: v.message,
-      }));
+      })),
+      ...llmFindingsWithFingerprint.map(({ finding, fingerprint }) => ({
+        runId: run.id,
+        fingerprint,
+        source: 'llm' as const,
+        ruleOrCategory: finding.category,
+        severity: finding.severity,
+        file: finding.file,
+        line: finding.line,
+        rationale: finding.title,
+      })),
+    ];
 
+    if (allNewFindings.length > 0) {
       await withTenantContext(this.db, installationId, async () => {
-        await this.findingRepository.insertFindings(run.id, newFindings);
+        await this.findingRepository.insertFindings(run.id, allNewFindings);
       });
 
       // Record findings metrics by source and severity.
       for (const v of deltaViolations) {
         this.metricFindingsTotal.inc({ source: 'graph', severity: v.severity });
+      }
+      for (const { finding } of llmFindingsWithFingerprint) {
+        this.metricFindingsTotal.inc({ source: 'llm', severity: finding.severity });
       }
     }
 
@@ -400,18 +510,23 @@ export class ReviewJobProcessor extends WorkerHost {
   }
 
   /**
-   * Placeholder for M3: resolves the owner (org/user) from the repository ID.
-   * In M3 this will be a DB query joining repositories → installations.
+   * Resolves owner login and repo slug from the DB.
+   * repositories.fullName is stored as "owner/repo" by the webhook handler.
    */
-  private async resolveOwnerRepo(repositoryId: number): Promise<string> {
-    void repositoryId;
-    // TODO(M4): Query InstallationRepository for owner.
-    return 'unknown-owner';
-  }
-
-  private async resolveRepoName(repositoryId: number): Promise<string> {
-    void repositoryId;
-    // TODO(M4): Query InstallationRepository for repo name.
-    return 'unknown-repo';
+  private async resolveRepo(
+    repositoryId: number,
+  ): Promise<{ owner: string; repoName: string }> {
+    const repo = await this.installationRepository.findRepositoryById(repositoryId);
+    if (repo === undefined) {
+      throw new Error(`resolveRepo: repository not found for id=${repositoryId}`);
+    }
+    const slashIdx = repo.fullName.indexOf('/');
+    if (slashIdx === -1) {
+      throw new Error(`resolveRepo: malformed fullName="${repo.fullName}" for id=${repositoryId}`);
+    }
+    return {
+      owner: repo.fullName.slice(0, slashIdx),
+      repoName: repo.fullName.slice(slashIdx + 1),
+    };
   }
 }

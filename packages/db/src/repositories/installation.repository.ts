@@ -99,6 +99,23 @@ export class InstallationRepository {
   }
 
   /**
+   * Returns a single repository row by its GitHub repository ID,
+   * or `undefined` if not found.
+   *
+   * The fullName field (e.g. "owner/repo") can be split on the first `/`
+   * to obtain the owner login and repository slug for GitHub API calls.
+   */
+  async findRepositoryById(id: number): Promise<Repository | undefined> {
+    const rows = await this.db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, id))
+      .limit(1);
+
+    return rows[0];
+  }
+
+  /**
    * Returns an installation row with all its associated repositories,
    * or `undefined` if not found.
    */
