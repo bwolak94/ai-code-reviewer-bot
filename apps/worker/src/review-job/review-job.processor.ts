@@ -372,8 +372,8 @@ export class ReviewJobProcessor extends WorkerHost {
           installationId,
           runId: run.id,
           repoDir: headDir,
-          baseSha,
-          headSha,
+          baseSha: 'FETCH_HEAD',
+          headSha: 'HEAD',
           diffFiles: diffResult.filteredFiles,
           deterministicViolations: deltaViolations.map((v) => ({
             rule: v.rule,
