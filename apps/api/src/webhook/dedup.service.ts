@@ -19,7 +19,7 @@ export class DedupService {
    * UUID v4 format: 8-4-4-4-12 hex chars with hyphens.
    * GitHub delivery IDs follow this format exactly.
    */
-  private static readonly DELIVERY_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+  private static readonly DELIVERY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   private static readonly DEDUP_TTL_SECONDS = 86_400;
 
   constructor(

@@ -8,8 +8,10 @@ import {
   UseGuards,
   BadRequestException,
   Req,
+  Inject,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
+import type { Logger as PinoLogger } from 'pino';
 import { WebhookThrottlerGuard } from './webhook-throttler.guard.js';
 import { WebhookGuard } from './webhook.guard.js';
 import { DedupService } from './dedup.service.js';
@@ -35,6 +37,7 @@ export class WebhookController {
   constructor(
     private readonly dedupService: DedupService,
     private readonly webhookService: WebhookService,
+    @Inject('PINO_LOGGER') private readonly logger: PinoLogger,
   ) {}
 
   @Post('github')
@@ -76,11 +79,7 @@ export class WebhookController {
       (err: unknown) => {
         // Errors in async processing must not crash the process.
         // The 202 has already been sent; log for observability (M7 wiring).
-        process.stderr.write(
-          `Unhandled error in webhook route [${deliveryId}]: ${
-            err instanceof Error ? err.stack : String(err)
-          }\n`,
-        );
+        this.logger.error({ err, deliveryId }, 'unhandled error in webhook route');
       },
     );
 

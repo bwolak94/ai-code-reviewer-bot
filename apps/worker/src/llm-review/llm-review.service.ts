@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger as PinoLogger } from 'pino';
 import { TwoStageRouter } from '@repo/llm-review';
@@ -6,6 +7,8 @@ import type { DiffChunk, DeterministicViolation, ReviewConfig } from '@repo/llm-
 import type { Finding } from '@repo/llm-review';
 import { parseUnifiedDiff, isLineInDiff } from '@repo/github';
 import type { FileDiff } from '@repo/github';
+
+const execFileAsync = promisify(execFile);
 
 export interface LlmReviewParams {
   installationId: number;
@@ -45,6 +48,14 @@ export class LlmReviewService {
       archContext = '',
     } = params;
 
+    const SHA_RE = /^[0-9a-f]{40}$/i;
+    if (!SHA_RE.test(baseSha)) {
+      throw new Error(`runLlmReview: invalid baseSha "${baseSha}"`);
+    }
+    if (!SHA_RE.test(headSha)) {
+      throw new Error(`runLlmReview: invalid headSha "${headSha}"`);
+    }
+
     // Build diff chunks from each file
     const allChunks: DiffChunk[] = [];
     const fileDiffMap = new Map<string, FileDiff>();
@@ -52,11 +63,12 @@ export class LlmReviewService {
     for (const filePath of diffFiles) {
       let diffText: string;
       try {
-        diffText = execFileSync(
+        const { stdout } = await execFileAsync(
           'git',
           ['diff', baseSha, headSha, '--', filePath],
           { cwd: repoDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
         );
+        diffText = stdout;
       } catch (err) {
         this.logger.warn({ err, filePath }, 'failed to get diff for file — skipping');
         continue;
@@ -77,7 +89,7 @@ export class LlmReviewService {
             return ` ${l.content}`;
           }).join('\n');
 
-          const nonRemovedCount = hunk.lines.filter((l) => l.type !== 'removed').length;
+          const nonRemovedCount = hunk.lines.filter((l) => l.type === 'added').length;
           const chunk: DiffChunk = {
             file: fileDiff.path,
             hunkText,

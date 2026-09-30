@@ -147,7 +147,7 @@ describe('ReviewJobProcessor', () => {
     mockInsertFindings = vi.fn().mockResolvedValue([]);
     mockGetBaseGraph = vi.fn().mockResolvedValue(null);
     mockSetBaseGraph = vi.fn().mockResolvedValue(undefined);
-    mockFindRepositoryById = vi.fn().mockResolvedValue({ id: 200, fullName: 'test-owner/test-repo', installationId: 100 });
+    mockFindRepositoryById = vi.fn().mockResolvedValue({ id: 200, fullName: 'test-owner/test-repo', installationId: 100, enabled: true });
     mockRunLlmReview = vi.fn().mockResolvedValue({ inlineFindings: [], summaryOnlyFindings: [] });
 
     const moduleRef = await Test.createTestingModule({
@@ -222,7 +222,10 @@ describe('ReviewJobProcessor', () => {
         },
         {
           provide: InstallationRepository,
-          useValue: { findRepositoryById: mockFindRepositoryById },
+          useValue: {
+            findRepositoryById: mockFindRepositoryById,
+            findByInstallationId: vi.fn().mockResolvedValue(null),
+          },
         },
         {
           provide: LlmReviewService,

@@ -27,9 +27,13 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
+    // Capture a single timestamp to avoid TOCTOU between the comparison guard
+    // and the delay calculation below.
+    const now = Date.now();
+
     // Schedule the first run at the next 03:00 UTC today (if not past) or tomorrow,
     // then every 24h thereafter.
-    const nowUtc = new Date();
+    const nowUtc = new Date(now);
     const todayRun = new Date(
       Date.UTC(
         nowUtc.getUTCFullYear(),
@@ -40,11 +44,11 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
     );
 
     // MED-03: If 03:00 UTC today has already passed, schedule for tomorrow.
-    const firstRunTime = todayRun.getTime() > Date.now()
+    const firstRunTime = todayRun.getTime() > now
       ? todayRun
       : new Date(todayRun.getTime() + 24 * 60 * 60 * 1000);
 
-    const msUntilFirstRun = firstRunTime.getTime() - Date.now();
+    const msUntilFirstRun = firstRunTime.getTime() - now;
 
     const startInterval = (): void => {
       void this.purgeOldRuns();

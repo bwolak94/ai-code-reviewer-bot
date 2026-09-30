@@ -41,7 +41,7 @@ describe('DedupService', () => {
       redisMock.set.mockResolvedValueOnce('OK');
 
       const result = await service.isDuplicate(
-        'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        'a1b2c3d4-e5f6-4890-abcd-ef1234567890',
       );
 
       expect(result).toBe(false);
@@ -55,7 +55,7 @@ describe('DedupService', () => {
 
     it('throws BadRequestException for a UUID with trailing whitespace', async () => {
       await expect(
-        service.isDuplicate('a1b2c3d4-e5f6-7890-abcd-ef1234567890 '),
+        service.isDuplicate('a1b2c3d4-e5f6-4890-abcd-ef1234567890 '),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -87,7 +87,7 @@ describe('DedupService', () => {
   });
 
   describe('Redis SET NX deduplication', () => {
-    const VALID_DELIVERY_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const VALID_DELIVERY_ID = 'a1b2c3d4-e5f6-4890-abcd-ef1234567890';
 
     it('calls Redis SET with correct key, value, EX flag, and 86400 TTL', async () => {
       redisMock.set.mockResolvedValueOnce('OK');

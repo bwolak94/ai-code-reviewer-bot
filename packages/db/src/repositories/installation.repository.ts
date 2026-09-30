@@ -122,22 +122,22 @@ export class InstallationRepository {
   async findByInstallationId(
     id: number,
   ): Promise<InstallationWithRepositories | undefined> {
-    const installationRows = await this.db
-      .select()
-      .from(installations)
-      .where(eq(installations.id, id))
-      .limit(1);
+    return this.db.transaction(async (tx) => {
+      const installationRows = await tx
+        .select()
+        .from(installations)
+        .where(eq(installations.id, id))
+        .limit(1);
 
-    const installation = installationRows[0];
-    if (installation === undefined) {
-      return undefined;
-    }
+      const installation = installationRows[0];
+      if (installation === undefined) return undefined;
 
-    const repos = await this.db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.installationId, id));
+      const repos = await tx
+        .select()
+        .from(repositories)
+        .where(eq(repositories.installationId, id));
 
-    return { ...installation, repositories: repos };
+      return { ...installation, repositories: repos };
+    });
   }
 }

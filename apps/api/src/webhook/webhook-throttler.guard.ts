@@ -11,8 +11,12 @@ import { ThrottlerGuard } from '@nestjs/throttler';
  *   installation cannot exhaust capacity for others.
  *   Note: X-GitHub-Delivery cannot be used as the bucket key — it is a unique
  *   UUID per delivery, so each request would get its own fresh bucket.
- * - Fallback: source IP address for requests that lack the installation header
- *   (e.g. GitHub ping events sent during initial App installation).
+ * - Fallback chain for requests that lack the installation header
+ *   (e.g. GitHub ping events sent during initial App installation):
+ *   1. req['ip']              — Fastify sets this when trustProxy is configured
+ *   2. X-Forwarded-For header — first segment before comma, trimmed
+ *   3. req.socket.remoteAddress
+ *   4. literal 'unknown'
  *
  * Guard ordering in WebhookController:
  *   1. WebhookThrottlerGuard  — fast header-based key extraction, 429 on excess
@@ -46,13 +50,34 @@ export class WebhookThrottlerGuard extends ThrottlerGuard {
       return `installation:${targetId}`;
     }
 
-    // Fall back to the remote IP. Fastify exposes this as `req.ip`;
-    // Node's raw IncomingMessage uses `req.socket.remoteAddress`.
-    const ip =
-      (req['ip'] as string | undefined) ??
-      ((req['socket'] as Record<string, unknown> | undefined)?.['remoteAddress'] as string | undefined) ??
-      'unknown';
+    // Fall back through the IP resolution chain.
+    // 1. req.ip — Fastify populates this when trustProxy is configured.
+    const fastifyIp = req['ip'] as string | undefined;
+    if (typeof fastifyIp === 'string' && fastifyIp.length > 0) {
+      return fastifyIp;
+    }
 
-    return ip;
+    // 2. X-Forwarded-For — take only the first segment (the original client IP)
+    //    to prevent header-spoofing attacks where an attacker appends fake IPs.
+    const xForwardedFor = headers?.['x-forwarded-for'];
+    const forwardedFor = Array.isArray(xForwardedFor)
+      ? xForwardedFor[0]
+      : xForwardedFor;
+    if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
+      const firstIp = forwardedFor.split(',')[0]?.trim();
+      if (firstIp !== undefined && firstIp.length > 0) {
+        return firstIp;
+      }
+    }
+
+    // 3. Raw socket address — available on both Fastify and plain http.IncomingMessage.
+    const remoteAddress = (req['socket'] as Record<string, unknown> | undefined)
+      ?.['remoteAddress'] as string | undefined;
+    if (typeof remoteAddress === 'string' && remoteAddress.length > 0) {
+      return remoteAddress;
+    }
+
+    // 4. Last resort: all unresolvable requests share one bucket.
+    return 'unknown';
   }
 }
