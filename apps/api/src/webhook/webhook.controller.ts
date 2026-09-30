@@ -8,33 +8,36 @@ import {
   UseGuards,
   BadRequestException,
   Req,
+  Inject,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
+import type { Logger as PinoLogger } from 'pino';
+import { WebhookThrottlerGuard } from './webhook-throttler.guard.js';
 import { WebhookGuard } from './webhook.guard.js';
 import { DedupService } from './dedup.service.js';
 import { WebhookService } from './webhook.service.js';
-
-// TODO: SEC-001 — Add ThrottlerGuard for rate limiting (task-007)
-// Implement: 60 events/minute per installation ID, 200/minute per source IP.
-// Reference: security-audit.md SEC-001 (Critical) — deferred to task-007 P0.
 
 /**
  * Handles incoming GitHub webhook events.
  *
  * Security model:
- * - WebhookGuard MUST run before the handler — it verifies the HMAC using the
- *   raw request body bytes, not parsed JSON (key reordering would break the sig).
+ * - WebhookThrottlerGuard runs first (SEC-001): rate-limits by installation ID
+ *   (X-GitHub-Hook-Installation-Target-Id header), falling back to source IP.
+ *   Returns 429 when the limit of 120 req / 60 s is exceeded.
+ * - WebhookGuard verifies the HMAC using the raw request body bytes, not
+ *   parsed JSON (key reordering would break the sig).
  * - X-GitHub-Delivery is validated as UUID before use as a Redis key (SEC-026).
  * - Duplicate deliveries (same X-GitHub-Delivery) return 202 immediately
  *   without re-processing (idempotency guarantee).
  * - 202 is always returned to GitHub within 200ms; processing is async.
  */
 @Controller('webhooks')
-@UseGuards(WebhookGuard)
+@UseGuards(WebhookThrottlerGuard, WebhookGuard)
 export class WebhookController {
   constructor(
     private readonly dedupService: DedupService,
     private readonly webhookService: WebhookService,
+    @Inject('PINO_LOGGER') private readonly logger: PinoLogger,
   ) {}
 
   @Post('github')
@@ -76,11 +79,7 @@ export class WebhookController {
       (err: unknown) => {
         // Errors in async processing must not crash the process.
         // The 202 has already been sent; log for observability (M7 wiring).
-        process.stderr.write(
-          `Unhandled error in webhook route [${deliveryId}]: ${
-            err instanceof Error ? err.stack : String(err)
-          }\n`,
-        );
+        this.logger.error({ err, deliveryId }, 'unhandled error in webhook route');
       },
     );
 

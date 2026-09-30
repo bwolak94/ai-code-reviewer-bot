@@ -1,6 +1,11 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import type { Logger as PinoLogger } from 'pino';
+
+/** Minimal interface satisfied by UsagePeriodRepository — avoids a hard dep on @repo/db. */
+interface UsageTracker {
+  incrementUsage(installationId: number, delta: number): Promise<void>;
+}
 
 const MAX_TOKENS_PER_INSTALLATION_MONTH = 100_000;
 // 32 days in seconds
@@ -37,6 +42,9 @@ export class TokenBudgetService {
     private readonly redis: Redis,
     @Inject('PINO_LOGGER')
     private readonly logger: PinoLogger,
+    @Optional()
+    @Inject('USAGE_PERIOD_REPOSITORY')
+    private readonly usageTracker: UsageTracker | null = null,
   ) {}
 
   private buildBudgetKey(installationId: number): string {
@@ -88,9 +96,22 @@ export class TokenBudgetService {
     tokensIn: number,
     tokensOut: number,
   ): Promise<void> {
+    const total = tokensIn + tokensOut;
+
     this.logger.info(
       { installationId, runId, tokensIn, tokensOut },
       'token usage recorded',
     );
+
+    if (this.usageTracker !== null && total > 0) {
+      try {
+        await this.usageTracker.incrementUsage(installationId, total);
+      } catch (err) {
+        this.logger.warn(
+          { err, installationId, runId, total },
+          'failed to persist token usage to DB — budget Redis counter still accurate',
+        );
+      }
+    }
   }
 }

@@ -1,3 +1,5 @@
+import { initTelemetry } from './telemetry/otel.js';
+initTelemetry();
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import {

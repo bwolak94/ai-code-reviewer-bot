@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { WebhookController } from './webhook.controller.js';
 import { WebhookService } from './webhook.service.js';
 import { WebhookGuard } from './webhook.guard.js';
+import { WebhookThrottlerGuard } from './webhook-throttler.guard.js';
 import { DedupService } from './dedup.service.js';
 import { CheckRunHandler } from './handlers/check-run.handler.js';
 import { ReviewCommentHandler } from './handlers/review-comment.handler.js';
@@ -16,6 +17,7 @@ import { QueueModule } from '../queue/queue.module.js';
   providers: [
     WebhookService,
     WebhookGuard,
+    WebhookThrottlerGuard,
     DedupService,
     CheckRunHandler,
     ReviewCommentHandler,

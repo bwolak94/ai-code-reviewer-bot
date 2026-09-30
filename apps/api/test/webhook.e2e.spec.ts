@@ -6,6 +6,7 @@ import {
 } from '@nestjs/platform-fastify';
 import { createHmac } from 'node:crypto';
 import nock from 'nock';
+import { ThrottlerStorage } from '@nestjs/throttler';
 import 'reflect-metadata';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 const TEST_SECRET = 'test-webhook-secret';
-const VALID_DELIVERY_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-const SECOND_DELIVERY_ID = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
+const VALID_DELIVERY_ID = 'a1b2c3d4-e5f6-4890-abcd-ef1234567890';
+const SECOND_DELIVERY_ID = 'b2c3d4e5-f6a7-4901-8cde-f12345678901';
 
 // ─── Load the fixture payload ────────────────────────────────────────────────
 const fixtureRaw = readFileSync(
@@ -138,6 +139,17 @@ describe('WebhookController (e2e)', () => {
     })
       .overrideProvider(ReviewQueueService)
       .useValue(mockReviewQueueService)
+      // Use an in-memory no-op throttler storage in tests — avoids spinning up a
+      // real Redis connection just for rate-limit state.
+      .overrideProvider(ThrottlerStorage)
+      .useValue({
+        increment: vi.fn().mockResolvedValue({
+          totalHits: 1,
+          timeToExpire: 60,
+          isBlocked: false,
+          timeToBlockExpire: 0,
+        }),
+      })
       .compile();
 
     const adapter = new FastifyAdapter({ logger: false });
@@ -331,7 +343,7 @@ describe('WebhookController (e2e)', () => {
       headers: {
         'content-type': 'application/json',
         'x-github-event': 'pull_request',
-        'x-github-delivery': 'c3d4e5f6-a7b8-9012-cdef-234567890123',
+        'x-github-delivery': 'c3d4e5f6-a7b8-4012-8def-234567890123',
         'x-hub-signature-256': sig,
       },
       payload: payloadBuffer,

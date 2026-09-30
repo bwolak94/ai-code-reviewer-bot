@@ -2,7 +2,7 @@
   "_meta": {
     "headers": {
       "x-github-event": "pull_request",
-      "x-github-delivery": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "x-github-delivery": "a1b2c3d4-e5f6-4890-abcd-ef1234567890",
       "x-hub-signature-256": "sha256=computed-against-test-webhook-secret",
       "content-type": "application/json"
     },

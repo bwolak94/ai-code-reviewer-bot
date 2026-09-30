@@ -4,10 +4,23 @@ import { LlmReviewService } from '../src/llm-review/llm-review.service.js';
 import type { LlmReviewParams } from '../src/llm-review/llm-review.service.js';
 import type { Finding } from '@repo/llm-review';
 
-// Mock child_process.execFileSync so we don't run real git commands
-vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
-}));
+// Mock node:child_process so we don't run real git commands.
+// The service uses promisify(execFile), which reads util.promisify.custom
+// from the execFile function object. We attach a vi.fn() to that symbol
+// so promisify returns our mock directly (avoids callback-convention wiring).
+const mockExecFileAsync = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+);
+
+vi.mock('node:child_process', () => {
+  const execFile = vi.fn();
+  Object.defineProperty(execFile, Symbol.for('nodejs.util.promisify.custom'), {
+    value: mockExecFileAsync,
+    writable: true,
+    configurable: true,
+  });
+  return { execFile };
+});
 
 // Mock @repo/github's parseUnifiedDiff and isLineInDiff
 vi.mock('@repo/github', async (importOriginal) => {
@@ -29,11 +42,8 @@ vi.mock('@repo/llm-review', async (importOriginal) => {
   };
 });
 
-import { execFileSync } from 'node:child_process';
 import { parseUnifiedDiff, isLineInDiff } from '@repo/github';
 import { TwoStageRouter } from '@repo/llm-review';
-
-const mockExecSync = vi.mocked(execFileSync);
 const mockParseUnifiedDiff = vi.mocked(parseUnifiedDiff);
 const mockIsLineInDiff = vi.mocked(isLineInDiff);
 
@@ -67,8 +77,8 @@ const baseParams: LlmReviewParams = {
   installationId: 100,
   runId: 'run-uuid-001',
   repoDir: '/tmp/repo',
-  baseSha: 'abc123',
-  headSha: 'def456',
+  baseSha: 'a'.repeat(40),
+  headSha: 'd'.repeat(40),
   diffFiles: ['src/domain/user.service.ts'],
   deterministicViolations: [],
   config: {
@@ -121,7 +131,7 @@ describe('LlmReviewService', () => {
   });
 
   it('returns empty results when git diff produces empty output', async () => {
-    mockExecSync.mockReturnValue('');
+    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
 
     const result = await service.runLlmReview(baseParams);
     expect(result.inlineFindings).toEqual([]);
@@ -129,7 +139,7 @@ describe('LlmReviewService', () => {
   });
 
   it('places findings whose lines are in the diff into inlineFindings', async () => {
-    mockExecSync.mockReturnValue(SIMPLE_UNIFIED_DIFF);
+    mockExecFileAsync.mockResolvedValue({ stdout: SIMPLE_UNIFIED_DIFF, stderr: '' });
 
     const inlineFinding = makeFinding({ file: 'src/domain/user.service.ts', line: 2 });
 
@@ -164,7 +174,7 @@ describe('LlmReviewService', () => {
   });
 
   it('demotes findings whose lines are NOT in the diff to summaryOnlyFindings', async () => {
-    mockExecSync.mockReturnValue(SIMPLE_UNIFIED_DIFF);
+    mockExecFileAsync.mockResolvedValue({ stdout: SIMPLE_UNIFIED_DIFF, stderr: '' });
 
     const outOfDiffFinding = makeFinding({
       file: 'src/domain/user.service.ts',
@@ -198,7 +208,7 @@ describe('LlmReviewService', () => {
   });
 
   it('splits mixed findings correctly between inline and summaryOnly', async () => {
-    mockExecSync.mockReturnValue(SIMPLE_UNIFIED_DIFF);
+    mockExecFileAsync.mockResolvedValue({ stdout: SIMPLE_UNIFIED_DIFF, stderr: '' });
 
     const inlineFinding = makeFinding({ file: 'src/domain/user.service.ts', line: 2 });
     const summaryFinding = makeFinding({ file: 'src/domain/user.service.ts', line: 999 });
@@ -235,9 +245,9 @@ describe('LlmReviewService', () => {
   });
 
   it('skips files where git diff throws and continues with remaining files', async () => {
-    mockExecSync
-      .mockImplementationOnce(() => { throw new Error('git error'); })
-      .mockReturnValueOnce(SIMPLE_UNIFIED_DIFF);
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('git error'))
+      .mockResolvedValueOnce({ stdout: SIMPLE_UNIFIED_DIFF, stderr: '' });
 
     mockParseUnifiedDiff.mockReturnValue([
       {

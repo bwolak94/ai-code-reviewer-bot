@@ -41,6 +41,9 @@ import {
   METRIC_RUN_DURATION,
 } from '../metrics/metrics.tokens.js';
 
+const LLM_TRIAGE_THRESHOLD = 0.5;
+const LLM_CONFIDENCE_THRESHOLD = 0.7;
+
 /**
  * Generates a stable SHA-256 fingerprint for an LLM finding.
  * Uses source, category, file, line, and the first 80 chars of the title
@@ -144,6 +147,13 @@ export class ReviewJobProcessor extends WorkerHost {
       installationId,
     );
 
+    // Step 2.5: Bail early if the installation has been suspended.
+    const installation = await this.installationRepository.findByInstallationId(installationId);
+    if (installation?.suspendedAt !== null && installation?.suspendedAt !== undefined) {
+      this.logger.info({ installationId }, 'skipping review — installation suspended');
+      return;
+    }
+
     // Step 3+: Create workspace, clone, diff — cleanup guaranteed via finally.
     const workspace = await this.workspaceService.create(jobId);
 
@@ -218,7 +228,9 @@ export class ReviewJobProcessor extends WorkerHost {
     setRunId: (id: string) => void,
   ): Promise<void> {
     // Resolve owner and repo name from DB (repositories.fullName = "owner/repo").
-    const { owner, repoName } = await this.resolveRepo(repositoryId);
+    const { owner, repoName } = await withTenantContext(this.db, installationId, async () => {
+      return this.resolveRepo(repositoryId);
+    });
 
     // Step 4: Shallow-clone the head ref into a 'head' subdirectory.
     const { repoDir: headDir } = await this.cloneService.clone(
@@ -326,8 +338,8 @@ export class ReviewJobProcessor extends WorkerHost {
 
     // Step 10.7: LLM semantic review (skipped when llm.enabled=false or no API key).
     const llmReviewConfig: ReviewConfig = {
-      triageThreshold: 0.5,
-      confidenceThreshold: 0.7,
+      triageThreshold: LLM_TRIAGE_THRESHOLD,
+      confidenceThreshold: LLM_CONFIDENCE_THRESHOLD,
       maxInlineComments: config.review.max_inline_comments,
       minSeverityInline: config.review.min_severity_inline,
     };
@@ -401,6 +413,9 @@ export class ReviewJobProcessor extends WorkerHost {
         .map((r) => r.finding.fingerprint),
     );
 
+    const llmInlineFindingsSet = new Set(llmInlineFindings);
+    const llmSummaryFindingsSet = new Set(llmSummaryFindings);
+
     const violationsToPublish: ViolationForAnnotation[] = [
       ...deltaViolations
         .filter((v) => !suppressedFingerprints.has(v.fingerprint))
@@ -412,8 +427,19 @@ export class ReviewJobProcessor extends WorkerHost {
           severity: v.severity,
           fingerprint: v.fingerprint,
         })),
-      ...llmInlineFindings
-        .map((f) => ({ finding: f, fingerprint: computeLlmFingerprint(f) }))
+      ...llmFindingsWithFingerprint
+        .filter(({ finding }) => llmInlineFindingsSet.has(finding))
+        .filter(({ fingerprint }) => !suppressedFingerprints.has(fingerprint))
+        .map(({ finding, fingerprint }) => ({
+          rule: finding.category,
+          file: finding.file,
+          line: finding.line,
+          message: finding.title,
+          severity: finding.severity,
+          fingerprint,
+        })),
+      ...llmFindingsWithFingerprint
+        .filter(({ finding }) => llmSummaryFindingsSet.has(finding))
         .filter(({ fingerprint }) => !suppressedFingerprints.has(fingerprint))
         .map(({ finding, fingerprint }) => ({
           rule: finding.category,
@@ -519,6 +545,9 @@ export class ReviewJobProcessor extends WorkerHost {
     const repo = await this.installationRepository.findRepositoryById(repositoryId);
     if (repo === undefined) {
       throw new Error(`resolveRepo: repository not found for id=${repositoryId}`);
+    }
+    if (!repo.enabled) {
+      throw new Error(`resolveRepo: repository id=${repositoryId} is disabled`);
     }
     const slashIdx = repo.fullName.indexOf('/');
     if (slashIdx === -1) {

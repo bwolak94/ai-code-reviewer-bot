@@ -4,6 +4,7 @@ import {
   InstallationRepository,
   ReviewRunRepository,
   FindingRepository,
+  UsagePeriodRepository,
 } from '@repo/db';
 import { getWorkerEnv } from '../config/env.js';
 
@@ -41,7 +42,13 @@ import { getWorkerEnv } from '../config/env.js';
         new FindingRepository(db),
       inject: ['DRIZZLE_DB'],
     },
+    {
+      provide: 'USAGE_PERIOD_REPOSITORY',
+      useFactory: (db: ReturnType<typeof createDb>['db']) =>
+        new UsagePeriodRepository(db),
+      inject: ['DRIZZLE_DB'],
+    },
   ],
-  exports: ['DRIZZLE_DB', InstallationRepository, ReviewRunRepository, FindingRepository],
+  exports: ['DRIZZLE_DB', InstallationRepository, ReviewRunRepository, FindingRepository, 'USAGE_PERIOD_REPOSITORY'],
 })
 export class WorkerDbModule {}
